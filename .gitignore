@@ -1,1 +1,21 @@
+# Virtual environment
 .venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# PyInstaller artifacts (reproducible via command — not versioned)
+build/
+dist/
+*.spec
+
+# Inno Setup output
+installer_output/
+
+# Runtime config (user-specific paths and preferences)
+config.ini
+
+# OS artifacts
+Thumbs.db
+desktop.ini

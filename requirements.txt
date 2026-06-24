@@ -3,4 +3,5 @@ pandas
 matplotlib
 scipy
 PyQt5
+xhtml2pdf
 
