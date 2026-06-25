@@ -18,15 +18,24 @@
 .PARAMETER Token
     GitHub Personal Access Token (required only if 'gh' CLI is not installed).
 
+.PARAMETER InnoSetupPath
+    Full path to ISCC.exe if not in PATH or standard install locations.
+    Example: -InnoSetupPath "C:\Tools\InnoSetup6\ISCC.exe"
+
 .EXAMPLE
     .\bump-release.ps1
     .\bump-release.ps1 -Version 2.0.0 -Notes "Major redesign"
+    .\bump-release.ps1 -InnoSetupPath "C:\InnoSetup6\ISCC.exe"
 #>
 param(
-    [string]$Version = "",
-    [string]$Notes   = "",
-    [string]$Token   = ""
+    [string]$Version       = "",
+    [string]$Notes         = "",
+    [string]$Token         = "",
+    [string]$InnoSetupPath = ""
 )
+
+# Forzar UTF-8 en la consola para que los caracteres especiales se muestren bien
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -34,7 +43,7 @@ Set-Location $PSScriptRoot
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-function Step { param([string]$msg)  Write-Host "`n── $msg" -ForegroundColor Cyan }
+function Step { param([string]$msg)  Write-Host "`n-- $msg" -ForegroundColor Cyan }
 function OK   { param([string]$msg)  Write-Host "   OK  $msg" -ForegroundColor Green }
 function Fail { param([string]$msg)  Write-Host "`n   !! $msg" -ForegroundColor Red; exit 1 }
 
@@ -43,17 +52,17 @@ function Update-File {
     [System.IO.File]::WriteAllText(
         (Resolve-Path $Path).Path,
         $Content,
-        [System.Text.UTF8Encoding]::new($false)   # UTF-8 sin BOM
+        [System.Text.UTF8Encoding]::new($false)
     )
 }
 
-# ── 1. Detectar versión actual ─────────────────────────────────────────────────
+# ── 1. Detectar version actual ────────────────────────────────────────────────
 
-Step "Detectando versión actual"
+Step "Detectando version actual"
 
 $pyContent = Get-Content "histogram.py" -Raw
 if ($pyContent -notmatch 'APP_VERSION\s*=\s*"(\d+)\.(\d+)\.(\d+)"') {
-    Fail "No se encontró APP_VERSION en histogram.py"
+    Fail "No se encontro APP_VERSION en histogram.py"
 }
 $major   = [int]$Matches[1]
 $minor   = [int]$Matches[2]
@@ -61,21 +70,21 @@ $patch   = [int]$Matches[3]
 $oldVer  = "$major.$minor.$patch"
 $autoVer = "$major.$minor.$($patch + 1)"
 
-OK "Versión instalada: $oldVer"
+OK "Version actual: $oldVer"
 
 if ($Version -eq "") {
-    $input = Read-Host "   Nueva versión [Enter = $autoVer]"
-    $Version = if ($input -ne "") { $input } else { $autoVer }
+    $userInput = Read-Host "   Nueva version [Enter = $autoVer]"
+    $Version = if ($userInput -ne "") { $userInput } else { $autoVer }
 }
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
-    Fail "Formato de versión inválido: '$Version'  (usar MAJOR.MINOR.PATCH)"
+    Fail "Formato invalido: '$Version'  (usar MAJOR.MINOR.PATCH)"
 }
 if ($Version -eq $oldVer) {
-    Fail "La versión nueva ($Version) es igual a la actual. Abortando."
+    Fail "La version nueva ($Version) es igual a la actual. Abortando."
 }
 
-OK "Nueva versión: $Version"
+OK "Nueva version: $Version"
 
 # ── 2. Actualizar histogram.py ────────────────────────────────────────────────
 
@@ -96,30 +105,61 @@ OK "#define AppVersion `"$Version`""
 
 Step "Reconstruyendo ejecutable con PyInstaller"
 & ".venv\Scripts\pyinstaller.exe" "HistogramFAdeA.spec" --noconfirm
-if ($LASTEXITCODE -ne 0) { Fail "PyInstaller falló (exit $LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) { Fail "PyInstaller fallo (exit $LASTEXITCODE)" }
 OK "dist\HistogramFAdeA\HistogramFAdeA.exe generado"
 
 # ── 5. Compilar instalador (Inno Setup) ──────────────────────────────────────
 
 Step "Compilando instalador con Inno Setup"
 
-$iscc = (Get-Command iscc -ErrorAction SilentlyContinue)?.Source
-if (-not $iscc) {
-    @(
-        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
-        "${env:ProgramFiles(x86)}\Inno Setup 5\ISCC.exe",
-        "$env:ProgramFiles\Inno Setup 5\ISCC.exe"
-    ) | ForEach-Object {
-        if (-not $iscc -and (Test-Path $_)) { $iscc = $_ }
-    }
-}
-if (-not $iscc) {
-    Fail "Inno Setup (ISCC.exe) no encontrado.`n   Descárgalo en: https://jrsoftware.org/isdl.php"
+$iscc = $null
+
+# Prioridad 1: parametro -InnoSetupPath
+if ($InnoSetupPath -ne "") {
+    if (Test-Path $InnoSetupPath) { $iscc = $InnoSetupPath }
+    else { Fail "ISCC.exe no encontrado en la ruta indicada: $InnoSetupPath" }
 }
 
+# Prioridad 2: en el PATH del sistema
+if (-not $iscc) {
+    $isccCmd = Get-Command ISCC -ErrorAction SilentlyContinue
+    if ($isccCmd) { $iscc = $isccCmd.Source }
+}
+
+# Prioridad 3: rutas de instalacion estandar
+if (-not $iscc) {
+    $candidates = @(
+        "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 5\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 5\ISCC.exe",
+        "C:\InnoSetup7\ISCC.exe",
+        "C:\InnoSetup6\ISCC.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { $iscc = $c; break }
+    }
+}
+
+if (-not $iscc) {
+    Write-Host ""
+    Write-Host "   Inno Setup (ISCC.exe) no encontrado." -ForegroundColor Yellow
+    Write-Host "   Opciones:" -ForegroundColor Yellow
+    Write-Host "     1) Instalarlo desde https://jrsoftware.org/isdl.php" -ForegroundColor Yellow
+    Write-Host "     2) Ejecutar con: .\bump-release.ps1 -InnoSetupPath `"C:\ruta\ISCC.exe`"" -ForegroundColor Yellow
+    Write-Host ""
+    $manualPath = Read-Host "   O ingresa la ruta completa a ISCC.exe ahora (Enter para cancelar)"
+    if ($manualPath -eq "" -or -not (Test-Path $manualPath)) {
+        Fail "ISCC.exe no disponible. Abortando."
+    }
+    $iscc = $manualPath
+}
+
+OK "Usando: $iscc"
 & $iscc "installer.iss"
-if ($LASTEXITCODE -ne 0) { Fail "Inno Setup falló (exit $LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) { Fail "Inno Setup fallo (exit $LASTEXITCODE)" }
 
 $assetPath = "installer_output\HistogramFAdeA_Setup_v$Version.exe"
 if (-not (Test-Path $assetPath)) {
@@ -133,13 +173,18 @@ Step "Git: commit, tag, push"
 
 git add histogram.py installer.iss
 git commit -m "bump version to $Version"
-if ($LASTEXITCODE -ne 0) { Fail "git commit falló" }
+if ($LASTEXITCODE -ne 0) { Fail "git commit fallo" }
 
 git tag "v$Version"
-if ($LASTEXITCODE -ne 0) { Fail "git tag falló (¿el tag v$Version ya existe?)" }
+if ($LASTEXITCODE -ne 0) { Fail "git tag fallo (el tag v$Version ya existe?)" }
 
-git push origin main --tags
-if ($LASTEXITCODE -ne 0) { Fail "git push falló" }
+# Detectar nombre del remote (tipicamente 'origin' o 'main')
+$remote = git remote 2>$null | Select-Object -First 1
+if (-not $remote) { Fail "No se encontro ningun git remote configurado" }
+OK "Remote: $remote"
+
+git push $remote HEAD --tags
+if ($LASTEXITCODE -ne 0) { Fail "git push fallo" }
 
 OK "Tag v$Version enviado a origin"
 
@@ -154,15 +199,13 @@ if ($Notes -eq "") {
 
 $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
 if ($ghCmd) {
-    # ── gh CLI (si está instalado) ─────────────────────────────────────────
     gh release create "v$Version" $assetPath `
         --title "HistogramFAdeA v$Version" `
         --notes $Notes
-    if ($LASTEXITCODE -ne 0) { Fail "gh release create falló" }
+    if ($LASTEXITCODE -ne 0) { Fail "gh release create fallo" }
     OK "Release publicado con gh CLI"
 
 } else {
-    # ── GitHub REST API (fallback) ─────────────────────────────────────────
     if ($Token -eq "") {
         $Token = Read-Host "   GitHub Personal Access Token (scope: repo)"
     }
@@ -173,7 +216,6 @@ if ($ghCmd) {
         "X-GitHub-Api-Version" = "2022-11-28"
     }
 
-    # Crear release
     $releaseBody = @{
         tag_name   = "v$Version"
         name       = "HistogramFAdeA v$Version"
@@ -191,10 +233,9 @@ if ($ghCmd) {
 
     OK "Release creado: $($release.html_url)"
 
-    # Subir asset
-    $assetName  = [IO.Path]::GetFileName($assetPath)
-    $uploadUri  = ($release.upload_url -replace '\{\?.*\}', '') +
-                  "?name=$([uri]::EscapeDataString($assetName))"
+    $assetName = [IO.Path]::GetFileName($assetPath)
+    $uploadUri = ($release.upload_url -replace '\{\?.*\}', '') +
+                 "?name=$([uri]::EscapeDataString($assetName))"
 
     $uploadHeaders = @{
         Authorization          = "Bearer $Token"
