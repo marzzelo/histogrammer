@@ -763,7 +763,7 @@ def run_gui():
             super().__init__(parent, Qt.FramelessWindowHint)
             self.setModal(True)
             self._build_ui()
-            self.setFixedSize(480, 268)
+            self.setFixedSize(500, 330)
             self._center(parent)
             if auto_close:
                 QTimer.singleShot(3000, self.accept)
@@ -792,16 +792,18 @@ def run_gui():
             vbox.setSpacing(0)
 
             lbl_product = QLabel("Histogrammer")
-            lbl_product.setFont(QFont("Segoe UI", 26, QFont.Bold))
-            lbl_product.setStyleSheet("color: #FFFFFF;")
+            lbl_product.setStyleSheet(
+                "font-family:'Segoe UI'; font-size:38pt; font-weight:bold; color:#FFFFFF;"
+            )
             lbl_product.setAlignment(Qt.AlignCenter)
             vbox.addWidget(lbl_product)
 
             vbox.addSpacing(3)
 
             lbl_org = QLabel("F  A  d  e  A")
-            lbl_org.setFont(QFont("Segoe UI", 13))
-            lbl_org.setStyleSheet("color: #2E86AB;")
+            lbl_org.setStyleSheet(
+                "font-family:'Segoe UI'; font-size:18pt; color:#2E86AB;"
+            )
             lbl_org.setAlignment(Qt.AlignCenter)
             vbox.addWidget(lbl_org)
 
@@ -819,24 +821,27 @@ def run_gui():
                 "Outlier detection  ·  Time-series support\n"
                 "HTML and PDF report export."
             )
-            lbl_desc.setFont(QFont("Segoe UI", 10))
-            lbl_desc.setStyleSheet("color: #A9CCE3;")
+            lbl_desc.setStyleSheet(
+                "font-family:'Segoe UI'; font-size:10pt; color:#A9CCE3;"
+            )
             lbl_desc.setAlignment(Qt.AlignCenter)
             vbox.addWidget(lbl_desc)
 
             vbox.addSpacing(20)
 
             lbl_author = QLabel(f"Eng. Marcelo Valdez  ·  v{APP_VERSION}")
-            lbl_author.setFont(QFont("Segoe UI", 9))
-            lbl_author.setStyleSheet("color: #5D8AA8;")
+            lbl_author.setStyleSheet(
+                "font-family:'Segoe UI'; font-size:9pt; color:#5D8AA8;"
+            )
             lbl_author.setAlignment(Qt.AlignCenter)
             vbox.addWidget(lbl_author)
 
             vbox.addSpacing(10)
 
             lbl_hint = QLabel("click anywhere or press any key to continue")
-            lbl_hint.setFont(QFont("Segoe UI", 8))
-            lbl_hint.setStyleSheet("color: #2E4A5A;")
+            lbl_hint.setStyleSheet(
+                "font-family:'Segoe UI'; font-size:8pt; color:#FFD700;"
+            )
             lbl_hint.setAlignment(Qt.AlignCenter)
             vbox.addWidget(lbl_hint)
 
@@ -865,8 +870,8 @@ def run_gui():
             outer.setSpacing(14)
 
             # ── header ────────────────────────────────────────────────────────
-            hdr = QLabel(f"Histogram Generator  <span style='font-size:11px; font-weight:normal; color:#5D6D7E;'>v{APP_VERSION}</span>")
-            hdr.setFont(QFont("Segoe UI", 15, QFont.Bold))
+            hdr = QLabel(f"Histogram Generator  <span style='font-size:13px; font-weight:normal; color:#5D6D7E;'>v{APP_VERSION}</span>")
+            hdr.setFont(QFont("Segoe UI", 20, QFont.Bold))
             hdr.setStyleSheet("color:#1A5276;")
             outer.addWidget(hdr)
 
