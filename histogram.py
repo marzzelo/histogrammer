@@ -38,6 +38,16 @@ TIME_DEFAULT_NAMES = {"t", "time", "t[s]"}
 AUTO_DETECT_LABEL  = "(auto-detect)"
 NONE_LABEL         = "(none)"
 
+APP_VERSION = "1.0.0"
+GITHUB_REPO = "marzzelo/histogrammer"
+
+
+def _version_tuple(v):
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except ValueError:
+        return (0,)
+
 # ── CSV helpers ───────────────────────────────────────────────────────────────
 
 
@@ -660,8 +670,9 @@ def run_gui():
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QFormLayout, QLabel, QLineEdit, QPushButton, QComboBox,
         QSpinBox, QDoubleSpinBox, QFileDialog, QFrame, QCheckBox, QDialog,
+        QMessageBox, QProgressDialog,
     )
-    from PyQt5.QtCore import Qt, QTimer
+    from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
     from PyQt5.QtGui import QFont
 
     CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
@@ -677,6 +688,64 @@ def run_gui():
         cfg[CONFIG_SEC] = {k: str(v) for k, v in values.items()}
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             cfg.write(f)
+
+    # ── auto-update threads ───────────────────────────────────────────────────
+
+    class UpdaterThread(QThread):
+        update_available = pyqtSignal(str, str)  # (new_version, download_url)
+
+        def run(self):
+            import json
+            import urllib.request
+            try:
+                req = urllib.request.Request(
+                    f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                    headers={
+                        "Accept": "application/vnd.github+json",
+                        "User-Agent": f"HistogramFAdeA/{APP_VERSION}",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = json.loads(resp.read().decode())
+                tag    = data.get("tag_name", "").lstrip("v")
+                assets = data.get("assets", [])
+                if tag and assets and _version_tuple(tag) > _version_tuple(APP_VERSION):
+                    self.update_available.emit(tag, assets[0]["browser_download_url"])
+            except Exception:
+                pass
+
+    class DownloadThread(QThread):
+        progress = pyqtSignal(int)   # 0-100
+        finished = pyqtSignal(str)   # path to downloaded file
+        error    = pyqtSignal(str)
+
+        def __init__(self, url, dest_path):
+            super().__init__()
+            self._url  = url
+            self._dest = dest_path
+
+        def run(self):
+            import urllib.request
+            try:
+                req = urllib.request.Request(
+                    self._url,
+                    headers={"User-Agent": f"HistogramFAdeA/{APP_VERSION}"},
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    total      = int(resp.headers.get("Content-Length", 0))
+                    downloaded = 0
+                    with open(self._dest, "wb") as f:
+                        while True:
+                            chunk = resp.read(65536)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total:
+                                self.progress.emit(int(downloaded * 100 / total))
+                self.finished.emit(self._dest)
+            except Exception as exc:
+                self.error.emit(str(exc))
 
     # ── splash / info dialog ─────────────────────────────────────────────────
 
@@ -1127,11 +1196,74 @@ def run_gui():
         def _show_info(self):
             SplashDialog(parent=self, auto_close=False).exec_()
 
+        # ── auto-update slots ─────────────────────────────────────────────────
+
+        def on_update_available(self, new_version, download_url):
+            reply = QMessageBox.question(
+                self,
+                "Nueva versión disponible",
+                f"<b>HistogramFAdeA v{new_version}</b> está disponible "
+                f"(versión instalada: v{APP_VERSION}).<br><br>"
+                "¿Desea descargar e instalar la actualización ahora?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+            import tempfile
+            dest = os.path.join(
+                tempfile.gettempdir(),
+                f"HistogramFAdeA_Setup_v{new_version}.exe",
+            )
+            self._progress_dlg = QProgressDialog(
+                f"Descargando HistogramFAdeA v{new_version}…",
+                "Cancelar", 0, 100, self,
+            )
+            self._progress_dlg.setWindowTitle("Descargando actualización")
+            self._progress_dlg.setWindowModality(Qt.WindowModal)
+            self._progress_dlg.setMinimumDuration(0)
+            self._progress_dlg.setValue(0)
+
+            self._dl_thread = DownloadThread(download_url, dest)
+            self._dl_thread.progress.connect(self._progress_dlg.setValue)
+            self._dl_thread.finished.connect(self._on_download_finished)
+            self._dl_thread.error.connect(self._on_download_error)
+            self._progress_dlg.canceled.connect(self._dl_thread.terminate)
+            self._dl_thread.start()
+            self._progress_dlg.exec_()
+
+        def _on_download_finished(self, path):
+            import subprocess
+            self._progress_dlg.setValue(100)
+            self._progress_dlg.close()
+            subprocess.Popen([path])
+            QApplication.quit()
+
+        def _on_download_error(self, msg):
+            import os as _os
+            self._progress_dlg.close()
+            dest = getattr(self._dl_thread, "_dest", "")
+            if dest and _os.path.isfile(dest):
+                try:
+                    _os.remove(dest)
+                except OSError:
+                    pass
+            QMessageBox.warning(
+                self,
+                "Error de descarga",
+                f"No se pudo descargar la actualización:\n{msg}\n\n"
+                "Puede descargarla manualmente desde GitHub.",
+            )
+
     app = QApplication.instance() or QApplication(sys.argv)
     splash = SplashDialog(auto_close=True)
     splash.exec_()
     win = MainWindow()
     win.show()
+    _updater = UpdaterThread()
+    _updater.update_available.connect(win.on_update_available)
+    _updater.start()
     sys.exit(app.exec_())
 
 

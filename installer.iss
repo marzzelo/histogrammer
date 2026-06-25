@@ -1,5 +1,5 @@
 #define AppName      "Histogram FAdeA"
-#define AppVersion   "1.0"
+#define AppVersion   "1.0.0"
 #define AppPublisher "FAdeA - Fábrica Argentina de Aviones"
 #define AppExeName   "HistogramFAdeA.exe"
 #define SourceDir    "dist\HistogramFAdeA"
@@ -32,8 +32,6 @@ Name: "desktopicon"; Description: "Crear acceso directo en el Escritorio"; Group
 [Files]
 ; Todos los archivos generados por PyInstaller
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Parche Universal CRT para Windows 7 (KB2999226)
-Source: "redist\Windows6.1-KB2999226-x64.msu"; DestDir: "{tmp}"; Flags: deleteafterinstall; Check: IsWin7
 
 [Icons]
 ; Menú Inicio
