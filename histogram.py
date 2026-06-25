@@ -38,7 +38,7 @@ TIME_DEFAULT_NAMES = {"t", "time", "t[s]"}
 AUTO_DETECT_LABEL  = "(auto-detect)"
 NONE_LABEL         = "(none)"
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.2.0"
 GITHUB_REPO = "marzzelo/histogrammer"
 
 
@@ -693,26 +693,35 @@ def run_gui():
 
     class UpdaterThread(QThread):
         update_available = pyqtSignal(str, str)  # (new_version, download_url)
+        check_error      = pyqtSignal(str)        # error description
 
         def run(self):
             import json
             import urllib.request
+            import urllib.error
             try:
                 req = urllib.request.Request(
-                    f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+                    f"https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=1",
                     headers={
                         "Accept": "application/vnd.github+json",
                         "User-Agent": f"HistogramFAdeA/{APP_VERSION}",
                     },
                 )
                 with urllib.request.urlopen(req, timeout=8) as resp:
-                    data = json.loads(resp.read().decode())
-                tag    = data.get("tag_name", "").lstrip("v")
-                assets = data.get("assets", [])
+                    releases = json.loads(resp.read().decode())
+                if not releases:
+                    print("[Updater] No releases found on GitHub.")
+                    return
+                release = releases[0]
+                tag    = release.get("tag_name", "").lstrip("v")
+                assets = release.get("assets", [])
+                print(f"[Updater] tag={tag!r}  assets={len(assets)}  local={APP_VERSION!r}")
                 if tag and assets and _version_tuple(tag) > _version_tuple(APP_VERSION):
                     self.update_available.emit(tag, assets[0]["browser_download_url"])
-            except Exception:
-                pass
+            except Exception as exc:
+                msg = f"{type(exc).__name__}: {exc}"
+                print(f"[Updater] ERROR: {msg}", file=sys.stderr)
+                self.check_error.emit(msg)
 
     class DownloadThread(QThread):
         progress = pyqtSignal(int)   # 0-100
@@ -817,7 +826,7 @@ def run_gui():
 
             vbox.addSpacing(20)
 
-            lbl_author = QLabel("Eng. Marcelo Valdez  ·  Experimental")
+            lbl_author = QLabel(f"Eng. Marcelo Valdez  ·  v{APP_VERSION}")
             lbl_author.setFont(QFont("Segoe UI", 9))
             lbl_author.setStyleSheet("color: #5D8AA8;")
             lbl_author.setAlignment(Qt.AlignCenter)
@@ -842,7 +851,7 @@ def run_gui():
     class MainWindow(QMainWindow):
         def __init__(self):
             super().__init__()
-            self.setWindowTitle("FAdeA — Histogram Generator")
+            self.setWindowTitle(f"FAdeA — Histogram Generator  v{APP_VERSION}")
             self.setMinimumWidth(580)
             self._last_html = None
             self._build_ui()
@@ -856,7 +865,7 @@ def run_gui():
             outer.setSpacing(14)
 
             # ── header ────────────────────────────────────────────────────────
-            hdr = QLabel("Histogram Generator")
+            hdr = QLabel(f"Histogram Generator  <span style='font-size:11px; font-weight:normal; color:#5D6D7E;'>v{APP_VERSION}</span>")
             hdr.setFont(QFont("Segoe UI", 15, QFont.Bold))
             hdr.setStyleSheet("color:#1A5276;")
             outer.addWidget(hdr)
@@ -1263,6 +1272,9 @@ def run_gui():
     win.show()
     _updater = UpdaterThread()
     _updater.update_available.connect(win.on_update_available)
+    _updater.check_error.connect(
+        lambda msg: win._set_status(f"● Update check: {msg}", "err")
+    )
     _updater.start()
     sys.exit(app.exec_())
 
