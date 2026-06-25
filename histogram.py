@@ -38,7 +38,7 @@ TIME_DEFAULT_NAMES = {"t", "time", "t[s]"}
 AUTO_DETECT_LABEL  = "(auto-detect)"
 NONE_LABEL         = "(none)"
 
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.6"
 GITHUB_REPO = "marzzelo/histogrammer"
 
 
