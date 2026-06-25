@@ -19,6 +19,7 @@ Without a time column, 1 sample/s is assumed (y-axis = count).
 import configparser
 import csv
 import os
+import re
 import sys
 
 import matplotlib
@@ -68,7 +69,7 @@ def find_time_col(columns):
 
 
 def remove_outliers(values, weights, k):
-    """Remove samples outside [Q1 - k*IQR, Q3 + k*IQR]. k=0 → no filtering."""
+    """Remove samples outside [Q1 - k*IQR, Q3 + k*IQR]. k=0 -> no filtering."""
     if k <= 0:
         return values, weights
     q1, q3 = np.percentile(values, [25, 75])
@@ -77,7 +78,7 @@ def remove_outliers(values, weights, k):
     mask = (values >= lo) & (values <= hi)
     removed = int(np.sum(~mask))
     if removed:
-        print(f"  Outlier removal (k={k}): [{lo:.5g}, {hi:.5g}]  → {removed} sample(s) removed")
+        print(f"  Outlier removal (k={k}): [{lo:.5g}, {hi:.5g}]  -> {removed} sample(s) removed")
     return values[mask], weights[mask]
 
 
@@ -111,6 +112,60 @@ def safe_col_name(col):
     return col
 
 
+# ── percentile / error chart ──────────────────────────────────────────────────
+
+
+def build_percentile_chart(values, target, out_stem, save_png=True):
+    """Generate CDF-style chart and decile table for |( y(t)-target )*100/target|."""
+    e_pct = np.abs((values - target) / target * 100)
+
+    x_ranks  = np.linspace(0, 100, min(600, len(e_pct)))
+    y_errors = np.percentile(e_pct, x_ranks)
+
+    decile_pcts = np.arange(0, 101, 10)          # P0, P10, …, P100
+    decile_vals = np.percentile(e_pct, decile_pcts)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    fig.patch.set_facecolor(PALETTE["fig_bg"])
+    ax.set_facecolor("#FFFFFF")
+
+    ax.fill_between(x_ranks, 0, y_errors, alpha=0.12, color=PALETTE["bar"], zorder=2)
+    ax.plot(x_ranks, y_errors, color=PALETTE["bar"], linewidth=2.3, zorder=3,
+            label="Percentile curve")
+    ax.scatter(decile_pcts, decile_vals, color=PALETTE["bar_peak"],
+               s=55, zorder=5, label="Deciles", clip_on=False)
+
+    for p, v in zip(decile_pcts, decile_vals):
+        lbl = "Min" if p == 0 else ("Max" if p == 100 else f"D{p//10}")
+        ax.annotate(lbl, (p, v), textcoords="offset points",
+                    xytext=(5, 3), fontsize=7.5, color=PALETTE["bar_peak"])
+
+    ax.set_xlabel("Percentile [%]", fontsize=11, labelpad=8)
+    ax.set_ylabel("| ( y(t) − target ) · 100 / target |  [%]", fontsize=10, labelpad=8)
+    ax.set_xlim(-1, 101)
+    ax.set_ylim(bottom=0)
+    ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x:.4g}%"))
+    ax.grid(linestyle="--", linewidth=0.55, alpha=0.5, zorder=1)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.spines[["left", "bottom"]].set_linewidth(0.8)
+    ax.tick_params(labelsize=9)
+    fig.suptitle("Percentile Distribution of Relative Error", fontsize=12,
+                 fontweight="bold", y=0.995)
+    ax.set_title(f"target = {target:.5g}  |  samples = {len(values)}",
+                 fontsize=9, color="#7F8C8D", pad=6)
+    ax.legend(fontsize=9, framealpha=0.9, edgecolor="#CCCCCC", loc="upper left")
+    plt.tight_layout(pad=1.5)
+
+    pct_svg = out_stem + "_pct.svg"
+    fig.savefig(pct_svg, bbox_inches="tight")
+    if save_png:
+        fig.savefig(out_stem + "_pct.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Pct chart  -> {pct_svg}")
+    return pct_svg, decile_vals
+
+
 # ── HTML report ───────────────────────────────────────────────────────────────
 
 
@@ -123,13 +178,23 @@ def build_html_report(
     w_mean, w_std, p25, p50, p75, v_min, v_max,
     total_weight, nbins, k, n_removed, chart_path,
     show_cols=None, target=None,
+    pct_chart_path=None, deciles=None,
 ):
+    def _inline_svg(path):
+        """Return the bare <svg>…</svg> content of a file for inline embedding."""
+        if not (path and os.path.isfile(path)):
+            return ""
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read()
+        m = re.search(r"<svg\b", raw, re.IGNORECASE)
+        return raw[m.start():] if m else raw
+
     sc           = {**DEFAULT_SHOW_COLS, **(show_cols or {})}
     n_samples    = len(values)
     raw_counts,_ = np.histogram(values, bins=edges)
     report_title = title or f"Histogram — {col}"
     file_name    = os.path.basename(csv_path)
-    chart_name   = os.path.basename(chart_path)
+    chart_svg    = _inline_svg(chart_path)
     has_time     = y_label == "Time [s]"
     peak_idx     = int(np.argmax(counts))
 
@@ -214,6 +279,35 @@ def build_html_report(
         f'<div class="val" style="color:#8E44AD">{target:.5g}</div></div>'
     ) if target is not None else ""
 
+    # ── percentile / decile section ───────────────────────────────────────────
+    if pct_chart_path and deciles is not None:
+        pct_chart_svg = _inline_svg(pct_chart_path)
+        dlabels = (["Min (P0)"]
+                   + [f"D{i} &nbsp;(P{i*10})" for i in range(1, 10)]
+                   + ["Max (P100)"])
+        d_rows_list = []
+        for i, (lbl, val) in enumerate(zip(dlabels, deciles)):
+            cls = "" if i % 2 else ' class="even-row"'
+            d_rows_list.append(
+                f'<tr{cls}><td class="num">{lbl}</td>'
+                f'<td class="pct-d">{val:.5g}%</td></tr>'
+            )
+        d_rows = "".join(d_rows_list)
+        pct_section = f"""
+<h2 class="sec-title">Relative Error Analysis &nbsp;&mdash;&nbsp; | (y(t) &minus; target) &middot; 100 / target |</h2>
+<div class="chart-wrap">{pct_chart_svg}</div>
+<table style="max-width:480px;margin-bottom:1.8rem">
+  <thead>
+    <tr>
+      <th style="width:170px">Decile</th>
+      <th>Error&nbsp;&nbsp;|&thinsp;(y(t)&thinsp;&minus;&thinsp;target)&thinsp;&middot;&thinsp;100&thinsp;/&thinsp;target&thinsp;|&nbsp;&nbsp;[%]</th>
+    </tr>
+  </thead>
+  <tbody>{d_rows}</tbody>
+</table>"""
+    else:
+        pct_section = ""
+
     return f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -257,6 +351,11 @@ td.tot{{font-weight:700;color:var(--BD)}}
 footer{{text-align:center;margin-top:2rem;font-size:.75rem;color:var(--mu);line-height:1.8}}
 footer a{{color:var(--mu);text-decoration:none}}
 footer a:hover{{text-decoration:underline}}
+.sec-title{{font-size:1.05rem;font-weight:700;color:var(--BD);
+            margin:2.4rem 0 1rem;padding:.35rem .9rem;
+            border-left:4px solid var(--B);background:var(--card);
+            border-radius:0 4px 4px 0;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
+td.pct-d{{text-align:right;font-family:Consolas,monospace;color:#8E44AD;font-weight:600}}
 </style>
 </head>
 <body>
@@ -266,7 +365,7 @@ footer a:hover{{text-decoration:underline}}
      &nbsp;|&nbsp; Bins: <strong>{nbins}</strong>
      &nbsp;|&nbsp; Time: <strong>{time_source}</strong>{outlier_note}</p>
 </header>
-<div class="chart-wrap"><img src="{chart_name}" alt="Histogram"></div>
+<div class="chart-wrap">{chart_svg}</div>
 <table>
   <thead>
     <tr>{grp_row}</tr>
@@ -284,6 +383,7 @@ footer a:hover{{text-decoration:underline}}
   <div class="card" style="border-left:4px solid #16A085"><div class="lbl">P25 / P75</div><div class="val" style="color:#16A085">{p25:.4g} / {p75:.4g}</div></div>
   {time_card}{outlier_card}{target_card}
 </div>
+{pct_section}
 <footer>
   Generated by histogram.py &nbsp;·&nbsp; {file_name} &nbsp;·&nbsp; Experimental - FAdeA<br>
   bugs: report to <a href="mailto:mvaldez@fadeasa.com.ar">Eng. Marcelo Valdez</a>
@@ -304,7 +404,7 @@ PALETTE = {
 }
 
 
-def make_histogram(col, csv_path, time_col_arg, nbins, title, k=0.0, show_cols=None, out_name=None, target=None):
+def make_histogram(col, csv_path, time_col_arg, nbins, title, k=0.0, show_cols=None, out_name=None, target=None, save_png=True, show_plot=True):
     """Core engine — called by both CLI and GUI paths."""
     if not os.path.isfile(csv_path):
         raise FileNotFoundError(f"File not found: {csv_path}")
@@ -461,12 +561,17 @@ def make_histogram(col, csv_path, time_col_arg, nbins, title, k=0.0, show_cols=N
     else:
         out_stem = os.path.splitext(csv_path)[0] + "_hist_" + safe_col_name(col)
     svg_path  = out_stem + ".svg"
-    png_path  = out_stem + ".png"   # kept for PDF export via xhtml2pdf
     html_path = out_stem + ".html"
 
     fig.savefig(svg_path, bbox_inches="tight")
-    fig.savefig(png_path, dpi=150, bbox_inches="tight")
-    print(f"Chart saved  → {svg_path}")
+    if save_png:
+        fig.savefig(out_stem + ".png", dpi=150, bbox_inches="tight")
+    print(f"Chart saved  -> {svg_path}")
+
+    pct_chart_path, deciles = (
+        build_percentile_chart(values, target, out_stem, save_png=save_png)
+        if target is not None else (None, None)
+    )
 
     html = build_html_report(
         col, csv_path, title, time_source, y_label,
@@ -474,12 +579,16 @@ def make_histogram(col, csv_path, time_col_arg, nbins, title, k=0.0, show_cols=N
         w_mean, w_std, p25, p50, p75, v_min, v_max,
         total_weight, nbins, k, n_removed, svg_path,
         show_cols=show_cols, target=target,
+        pct_chart_path=pct_chart_path, deciles=deciles,
     )
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"Report saved → {html_path}")
+    print(f"Report saved -> {html_path}")
 
-    plt.show()
+    if show_plot:
+        plt.show()
+    else:
+        plt.close()
     return svg_path, html_path
 
 
@@ -514,20 +623,22 @@ def html_to_pdf(html_path):
             html,
         )
 
-    # Embed chart as PNG base64 — HTML uses SVG, PDF falls back to sibling PNG
-    def _embed_chart(m):
-        src = m.group(1)
-        svg_abs = os.path.join(html_dir, src)
-        # Prefer the companion PNG (saved alongside SVG) for xhtml2pdf compatibility
-        png_abs = os.path.splitext(svg_abs)[0] + ".png"
-        img_abs = png_abs if os.path.isfile(png_abs) else svg_abs
-        if os.path.isfile(img_abs):
-            mime = "image/png" if img_abs.endswith(".png") else "image/svg+xml"
-            with open(img_abs, "rb") as f:
+    # Replace inline SVG blocks with companion PNG (xhtml2pdf cannot render SVG)
+    out_stem    = os.path.splitext(os.path.abspath(html_path))[0]
+    png_paths   = [out_stem + ".png", out_stem + "_pct.png"]
+    svg_counter = [0]
+
+    def _svg_to_png(m):
+        idx = svg_counter[0]
+        svg_counter[0] += 1
+        if idx < len(png_paths) and os.path.isfile(png_paths[idx]):
+            with open(png_paths[idx], "rb") as f:
                 data = base64.b64encode(f.read()).decode()
-            return f'src="data:{mime};base64,{data}"'
-        return m.group(0)
-    html = re.sub(r'src="([^"]+\.(?:svg|png))"', _embed_chart, html)
+            return f'<img src="data:image/png;base64,{data}" style="max-width:100%">'
+        return ""
+
+    html = re.sub(r"<svg\b[^>]*>.*?</svg>", _svg_to_png, html,
+                  flags=re.DOTALL | re.IGNORECASE)
 
     with open(pdf_path, "wb") as out:
         result = pisa.CreatePDF(html, dest=out, encoding="utf-8")
@@ -548,9 +659,9 @@ def run_gui():
     from PyQt5.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QFormLayout, QLabel, QLineEdit, QPushButton, QComboBox,
-        QSpinBox, QDoubleSpinBox, QFileDialog, QFrame, QCheckBox,
+        QSpinBox, QDoubleSpinBox, QFileDialog, QFrame, QCheckBox, QDialog,
     )
-    from PyQt5.QtCore import Qt
+    from PyQt5.QtCore import Qt, QTimer
     from PyQt5.QtGui import QFont
 
     CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
@@ -566,6 +677,96 @@ def run_gui():
         cfg[CONFIG_SEC] = {k: str(v) for k, v in values.items()}
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             cfg.write(f)
+
+    # ── splash / info dialog ─────────────────────────────────────────────────
+
+    class SplashDialog(QDialog):
+        def __init__(self, parent=None, auto_close=False):
+            super().__init__(parent, Qt.FramelessWindowHint)
+            self.setModal(True)
+            self._build_ui()
+            self.setFixedSize(480, 268)
+            self._center(parent)
+            if auto_close:
+                QTimer.singleShot(3000, self.accept)
+
+        def _center(self, parent):
+            if parent and parent.isVisible():
+                geo = parent.frameGeometry()
+                self.move(
+                    geo.x() + (geo.width()  - self.width())  // 2,
+                    geo.y() + (geo.height() - self.height()) // 2,
+                )
+            else:
+                rect = QApplication.primaryScreen().geometry()
+                self.move(
+                    (rect.width()  - self.width())  // 2,
+                    (rect.height() - self.height()) // 2,
+                )
+
+        def _build_ui(self):
+            self.setStyleSheet("""
+                QDialog { background: #1B2A3B; border: 2px solid #2E86AB; }
+                QLabel  { background: transparent; }
+            """)
+            vbox = QVBoxLayout(self)
+            vbox.setContentsMargins(48, 34, 48, 24)
+            vbox.setSpacing(0)
+
+            lbl_product = QLabel("Histogrammer")
+            lbl_product.setFont(QFont("Segoe UI", 26, QFont.Bold))
+            lbl_product.setStyleSheet("color: #FFFFFF;")
+            lbl_product.setAlignment(Qt.AlignCenter)
+            vbox.addWidget(lbl_product)
+
+            vbox.addSpacing(3)
+
+            lbl_org = QLabel("F  A  d  e  A")
+            lbl_org.setFont(QFont("Segoe UI", 13))
+            lbl_org.setStyleSheet("color: #2E86AB;")
+            lbl_org.setAlignment(Qt.AlignCenter)
+            vbox.addWidget(lbl_org)
+
+            vbox.addSpacing(18)
+
+            sep = QFrame()
+            sep.setFrameShape(QFrame.HLine)
+            sep.setStyleSheet("border: 1px solid #2E6490;")
+            vbox.addWidget(sep)
+
+            vbox.addSpacing(18)
+
+            lbl_desc = QLabel(
+                "Statistical histogram generator for CSV data.\n"
+                "Outlier detection  ·  Time-series support\n"
+                "HTML and PDF report export."
+            )
+            lbl_desc.setFont(QFont("Segoe UI", 10))
+            lbl_desc.setStyleSheet("color: #A9CCE3;")
+            lbl_desc.setAlignment(Qt.AlignCenter)
+            vbox.addWidget(lbl_desc)
+
+            vbox.addSpacing(20)
+
+            lbl_author = QLabel("Eng. Marcelo Valdez  ·  Experimental")
+            lbl_author.setFont(QFont("Segoe UI", 9))
+            lbl_author.setStyleSheet("color: #5D8AA8;")
+            lbl_author.setAlignment(Qt.AlignCenter)
+            vbox.addWidget(lbl_author)
+
+            vbox.addSpacing(10)
+
+            lbl_hint = QLabel("click anywhere or press any key to continue")
+            lbl_hint.setFont(QFont("Segoe UI", 8))
+            lbl_hint.setStyleSheet("color: #2E4A5A;")
+            lbl_hint.setAlignment(Qt.AlignCenter)
+            vbox.addWidget(lbl_hint)
+
+        def mousePressEvent(self, _event):
+            self.accept()
+
+        def keyPressEvent(self, _event):
+            self.accept()
 
     # ── main window ───────────────────────────────────────────────────────────
 
@@ -705,6 +906,13 @@ def run_gui():
                 }
                 QPushButton:hover { background:#FADBD8; }
             """
+            btn_style_info = """
+                QPushButton {
+                    background:#1B2A3B; color:#2E86AB; border:1px solid #2E86AB;
+                    border-radius:6px; font-size:12px; padding:0 16px;
+                }
+                QPushButton:hover { background:#253D52; }
+            """
             btn_style_pdf = """
                 QPushButton {
                     background:#EBF9F1; color:#1E8449; border:1px solid #27AE60;
@@ -741,10 +949,17 @@ def run_gui():
             btn_quit.setStyleSheet(btn_style_quit)
             btn_quit.clicked.connect(self.close)
 
+            btn_info = QPushButton("Info")
+            btn_info.setFixedHeight(34)
+            btn_info.setFixedWidth(60)
+            btn_info.setStyleSheet(btn_style_info)
+            btn_info.clicked.connect(self._show_info)
+
             btn_row.addWidget(self.btn_run)
             btn_row.addWidget(self.btn_html)
             btn_row.addWidget(self.btn_pdf)
             btn_row.addStretch()
+            btn_row.addWidget(btn_info)
             btn_row.addWidget(btn_quit)
             outer.addLayout(btn_row)
 
@@ -865,6 +1080,8 @@ def run_gui():
                     k            = self.w_k.value(),
                     out_name     = self.w_out.text().strip() or None,
                     target       = target,
+                    save_png     = False,
+                    show_plot    = False,
                     show_cols    = {
                         "time_s":   self.ck_time_s.isChecked(),
                         "time_hms": self.ck_time_hms.isChecked(),
@@ -876,8 +1093,9 @@ def run_gui():
                 self.btn_html.setEnabled(True)
                 self.btn_pdf.setEnabled(True)
                 self._set_status(
-                    f"✔  Saved → {os.path.basename(svg)}  |  {os.path.basename(html)}", "ok"
+                    f"✔  Saved -> {os.path.basename(svg)}  |  {os.path.basename(html)}", "ok"
                 )
+                webbrowser.open(html)
             except (FileNotFoundError, ValueError) as exc:
                 self._set_status(f"✖  {exc}", "err")
             finally:
@@ -894,7 +1112,7 @@ def run_gui():
             QApplication.processEvents()
             try:
                 pdf_path = html_to_pdf(self._last_html)
-                self._set_status(f"✔  PDF → {os.path.basename(pdf_path)}", "ok")
+                self._set_status(f"✔  PDF -> {os.path.basename(pdf_path)}", "ok")
             except Exception as exc:
                 self._set_status(f"✖  PDF error: {exc}", "err")
 
@@ -906,7 +1124,12 @@ def run_gui():
             )
             self.w_status.setText(msg)
 
+        def _show_info(self):
+            SplashDialog(parent=self, auto_close=False).exec_()
+
     app = QApplication.instance() or QApplication(sys.argv)
+    splash = SplashDialog(auto_close=True)
+    splash.exec_()
     win = MainWindow()
     win.show()
     sys.exit(app.exec_())
