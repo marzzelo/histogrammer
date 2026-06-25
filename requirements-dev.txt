@@ -1,0 +1,8 @@
+# Build / maintenance dependencies (NOT required to run the app).
+# Install into the project venv before publishing a release:
+#     .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+#
+# Runtime dependencies live in requirements.txt.
+
+pyinstaller>=6.21      # builds the standalone executable (used by bump-release.ps1)
+ftfy>=6.3              # fixes mojibake in source/text when re-encoding goes wrong

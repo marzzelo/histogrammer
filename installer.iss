@@ -1,5 +1,5 @@
 #define AppName      "Histogram FAdeA"
-#define AppVersion   "1.3.6"
+#define AppVersion   "1.4.2"
 #define AppPublisher "FAdeA - Fábrica Argentina de Aviones"
 #define AppExeName   "HistogramFAdeA.exe"
 #define SourceDir    "dist\HistogramFAdeA"
@@ -27,25 +27,25 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Crear acceso directo en el Escritorio"; GroupDescription: "ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âconos adicionales:"
+Name: "desktopicon"; Description: "Crear acceso directo en el Escritorio"; GroupDescription: "Íconos adicionales:"
 
 [Files]
 ; Todos los archivos generados por PyInstaller
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-; MenÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âº Inicio
+; Menú Inicio
 Name: "{group}\{#AppName}";     Filename: "{app}\{#AppExeName}"
 Name: "{group}\Desinstalar {#AppName}"; Filename: "{uninstallexe}"
-; Escritorio (opcional, segÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âºn selecciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n del usuario)
+; Escritorio (opcional, según selección del usuario)
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
-; Instalar UCRT en Windows 7 antes de lanzar la aplicaciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n
+; Instalar UCRT en Windows 7 antes de lanzar la aplicación
 Filename: "wusa.exe"; Parameters: "{tmp}\Windows6.1-KB2999226-x64.msu /quiet /norestart"; \
   StatusMsg: "Instalando componente del sistema requerido (UCRT)..."; \
   Flags: waituntilterminated; Check: IsWin7
-; OpciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n para ejecutar la aplicaciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n al finalizar la instalaciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n
+; Opción para ejecutar la aplicación al finalizar la instalación
 Filename: "{app}\{#AppExeName}"; Description: "Iniciar {#AppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
@@ -55,5 +55,5 @@ begin
 end;
 
 [UninstallDelete]
-; Eliminar config.ini generado en uso (queda en la carpeta de instalaciÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â³n)
+; Eliminar config.ini generado en uso (queda en la carpeta de instalación)
 Type: files; Name: "{app}\config.ini"

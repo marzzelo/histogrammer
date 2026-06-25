@@ -9,6 +9,8 @@ __pycache__/
 build/
 dist/
 *.spec
+# ...except the maintained build spec, which carries custom datas/hiddenimports
+!HistogramFAdeA.spec
 
 # Inno Setup output
 installer_output/

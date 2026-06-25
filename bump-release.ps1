@@ -104,7 +104,15 @@ OK "#define AppVersion `"$Version`""
 # ── 4. Reconstruir ejecutable (PyInstaller) ───────────────────────────────────
 
 Step "Reconstruyendo ejecutable con PyInstaller"
-& ".venv\Scripts\pyinstaller.exe" "HistogramFAdeA.spec" --noconfirm
+
+$pyinstaller = ".venv\Scripts\pyinstaller.exe"
+if (-not (Test-Path $pyinstaller)) {
+    Fail ("PyInstaller no encontrado en el venv ($pyinstaller).`n" +
+          "   Instala las dependencias de build con:`n" +
+          "     .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt")
+}
+
+& $pyinstaller "HistogramFAdeA.spec" --noconfirm
 if ($LASTEXITCODE -ne 0) { Fail "PyInstaller fallo (exit $LASTEXITCODE)" }
 OK "dist\HistogramFAdeA\HistogramFAdeA.exe generado"
 
@@ -171,7 +179,7 @@ OK $assetPath
 
 Step "Git: commit, tag, push"
 
-git add histogram.py installer.iss
+git add histogram.py installer.iss requirements-dev.txt bump-release.ps1 HistogramFAdeA.spec .gitignore
 git commit -m "bump version to $Version"
 if ($LASTEXITCODE -ne 0) { Fail "git commit fallo" }
 
