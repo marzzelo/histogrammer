@@ -60,7 +60,7 @@ function Update-File {
 
 Step "Detectando version actual"
 
-$pyContent = Get-Content "histogram.py" -Raw
+$pyContent = [System.IO.File]::ReadAllText((Resolve-Path "histogram.py").Path, [System.Text.UTF8Encoding]::new($false))
 if ($pyContent -notmatch 'APP_VERSION\s*=\s*"(\d+)\.(\d+)\.(\d+)"') {
     Fail "No se encontro APP_VERSION en histogram.py"
 }
@@ -96,7 +96,7 @@ OK "APP_VERSION = `"$Version`""
 # ── 3. Actualizar installer.iss ───────────────────────────────────────────────
 
 Step "Actualizando installer.iss"
-$issContent = Get-Content "installer.iss" -Raw
+$issContent = [System.IO.File]::ReadAllText((Resolve-Path "installer.iss").Path, [System.Text.UTF8Encoding]::new($false))
 $issContent = $issContent -replace '#define AppVersion\s+"[\d\.]+"', "#define AppVersion   `"$Version`""
 Update-File "installer.iss" $issContent
 OK "#define AppVersion `"$Version`""
