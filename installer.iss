@@ -1,5 +1,5 @@
 #define AppName      "Histogram FAdeA"
-#define AppVersion   "1.4.2"
+#define AppVersion   "1.4.3"
 #define AppPublisher "FAdeA - Fábrica Argentina de Aviones"
 #define AppExeName   "HistogramFAdeA.exe"
 #define SourceDir    "dist\HistogramFAdeA"

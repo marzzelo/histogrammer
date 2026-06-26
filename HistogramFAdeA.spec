@@ -17,6 +17,10 @@ for pkg in ("xhtml2pdf", "reportlab", "svglib"):
     binaries += b
     hiddenimports += h
 
+# Bundle the application icon so the runtime window/taskbar icon resolves
+# under sys._MEIPASS in the frozen app.
+datas += [("histogram_icon.ico", ".")]
+
 # Backends / submodules imported indirectly that PyInstaller can miss.
 hiddenimports += [
     "matplotlib.backends.backend_qt5agg",

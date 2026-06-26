@@ -38,7 +38,7 @@ TIME_DEFAULT_NAMES = {"t", "time", "t[s]"}
 AUTO_DETECT_LABEL  = "(auto-detect)"
 NONE_LABEL         = "(none)"
 
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.4.3"
 GITHUB_REPO = "marzzelo/histogrammer"
 
 
@@ -673,10 +673,18 @@ def run_gui():
         QMessageBox, QProgressDialog,
     )
     from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
-    from PyQt5.QtGui import QFont
+    from PyQt5.QtGui import QFont, QIcon
 
     CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
     CONFIG_SEC  = "last"
+
+    def _resource_path(rel):
+        """Resolve a bundled resource both when running from source and when
+        frozen by PyInstaller (which unpacks data files under sys._MEIPASS)."""
+        base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(base, rel)
+
+    APP_ICON_PATH = _resource_path("histogram_icon.ico")
 
     def _load_cfg():
         cfg = configparser.ConfigParser()
@@ -860,6 +868,8 @@ def run_gui():
         def __init__(self):
             super().__init__()
             self.setWindowTitle(f"FAdeA — Histogram Generator  v{APP_VERSION}")
+            if os.path.exists(APP_ICON_PATH):
+                self.setWindowIcon(QIcon(APP_ICON_PATH))
             self.setMinimumWidth(580)
             self._last_html = None
             self._build_ui()
@@ -873,8 +883,8 @@ def run_gui():
             outer.setSpacing(14)
 
             # ── header ────────────────────────────────────────────────────────
-            hdr = QLabel(f"Histogram Generator  <span style='font-size:13px; font-weight:normal; color:#5D6D7E;'>v{APP_VERSION}</span>")
-            hdr.setFont(QFont("Segoe UI", 20, QFont.Bold))
+            hdr = QLabel(f"Histogram Generator  <span style='font-size:16px; font-weight:normal; color:#5D6D7E;'>v{APP_VERSION}</span>")
+            hdr.setFont(QFont("Segoe UI", 28, QFont.Bold))
             hdr.setStyleSheet("color:#1A5276;")
             outer.addWidget(hdr)
 
@@ -1289,6 +1299,8 @@ def run_gui():
             pass
 
     app = QApplication.instance() or QApplication(sys.argv)
+    if os.path.exists(APP_ICON_PATH):
+        app.setWindowIcon(QIcon(APP_ICON_PATH))
     splash = SplashDialog(auto_close=True)
     splash.exec_()
     win = MainWindow()
