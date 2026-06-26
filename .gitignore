@@ -8,9 +8,8 @@ __pycache__/
 # PyInstaller artifacts (reproducible via command — not versioned)
 build/
 dist/
-*.spec
 # ...except the maintained build spec, which carries custom datas/hiddenimports
-!HistogramFAdeA.spec
+HistogramSOGEFI.spec
 
 # Inno Setup output
 installer_output/
