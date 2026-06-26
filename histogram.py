@@ -885,7 +885,10 @@ def run_gui():
             # ── header ────────────────────────────────────────────────────────
             hdr = QLabel(f"Histogram Generator  <span style='font-size:16px; font-weight:normal; color:#5D6D7E;'>v{APP_VERSION}</span>")
             hdr.setFont(QFont("Segoe UI", 28, QFont.Bold))
-            hdr.setStyleSheet("color:#1A5276;")
+            # font-size must live in the widget's own QSS: the global
+            # `QWidget { font-size:12px }` rule (set further below) otherwise
+            # cascades onto this label and overrides setFont().
+            hdr.setStyleSheet("color:#1A5276; font-size:20pt; font-weight:bold;")
             outer.addWidget(hdr)
 
             line = QFrame()
