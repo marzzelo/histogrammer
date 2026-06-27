@@ -11,7 +11,7 @@ from PyInstaller.utils.hooks import collect_all
 # Bundle data files (fonts, templates) for packages whose default hooks
 # may miss them, so HTML/PDF export works in the frozen app.
 datas, binaries, hiddenimports = [], [], []
-for pkg in ("xhtml2pdf", "reportlab", "svglib"):
+for pkg in ("xhtml2pdf", "reportlab", "svglib", "seaborn"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b

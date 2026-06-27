@@ -3,7 +3,7 @@
 histogram.py  –  Professional-quality histogram of a CSV column.
 
 GUI mode  : python histogram.py                       (no arguments)
-CLI mode  : python histogram.py <column> <csvfile> [options]
+CLI mode  : python histogram.py <column[,column2,…]> <csvfile> [options]
 
 CLI options (key=value, no spaces around =):
     t=<name>      Time column  (auto-detects "t", "time", "t[s]")
@@ -21,15 +21,19 @@ import csv
 import os
 import re
 import sys
+import warnings
 
 import matplotlib
 matplotlib.use("Qt5Agg")
 import matplotlib.backends.backend_svg  # explicit import so PyInstaller bundles it
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import xhtml2pdf.pisa  # explicit import so PyInstaller bundles xhtml2pdf
 import matplotlib.ticker as ticker
 import numpy as np
 import pandas as pd
+import seaborn as sns
+from matplotlib.lines import Line2D
 from scipy.stats import gaussian_kde
 
 # ── constants ─────────────────────────────────────────────────────────────────
@@ -38,7 +42,7 @@ TIME_DEFAULT_NAMES = {"t", "time", "t[s]"}
 AUTO_DETECT_LABEL  = "(auto-detect)"
 NONE_LABEL         = "(none)"
 
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.5.0"
 GITHUB_REPO = "marzzelo/histogrammer"
 
 
@@ -125,7 +129,7 @@ def safe_col_name(col):
 # ── percentile / error chart ──────────────────────────────────────────────────
 
 
-def build_percentile_chart(values, target, out_stem, save_png=True):
+def build_percentile_chart(values, target, out_stem):
     """Generate CDF-style chart and decile table for |( y(t)-target )*100/target|."""
     e_pct = np.abs((values - target) / target * 100)
 
@@ -169,11 +173,106 @@ def build_percentile_chart(values, target, out_stem, save_png=True):
 
     pct_svg = out_stem + "_pct.svg"
     fig.savefig(pct_svg, bbox_inches="tight")
-    if save_png:
-        fig.savefig(out_stem + "_pct.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out_stem + "_pct.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Pct chart  -> {pct_svg}")
     return pct_svg, decile_vals
+
+
+# ── box-plot chart (seaborn box + swarm overlay) ──────────────────────────────
+
+BOX_COLORS = ["#4C72B0", "#DD8452", "#55A868", "#C44E52",
+              "#8172B3", "#937860", "#DA8BC3", "#8C8C8C",
+              "#CCB974", "#64B5CD"]
+
+SWARM_MAX = 500   # swarm point cap — keeps placement fast and warning-free
+
+
+def _lighten(color, amount=0.45):
+    """Blend *color* toward white by *amount* (0 = unchanged, 1 = white)."""
+    r, g, b = mcolors.to_rgb(color)
+    return (r + (1 - r) * amount, g + (1 - g) * amount, b + (1 - b) * amount)
+
+
+def build_boxplot_chart(values, name, out_stem, color_idx=0, outliers=None):
+    """Single-channel seaborn box-plot with the individual samples overlaid as a
+    swarm.  Returns (svg_path, quartiles) where *quartiles* is one stat dict, or
+    (None, None) if there is no data.
+
+    *values* are the in-range samples that define the box (and the quartile
+    table).  Any *outliers* removed by the IQR filter are still drawn as a
+    distinct swarm — so they remain visible even though the box excludes them."""
+    vals = np.asarray(values, dtype=float)
+    vals = vals[~np.isnan(vals)]
+    if vals.size == 0:
+        return None, None
+
+    outl = np.asarray(outliers, dtype=float) if outliers is not None else np.empty(0)
+    outl = outl[~np.isnan(outl)]
+    has_outliers = outl.size > 0
+
+    q1, med, q3 = np.percentile(vals, [25, 50, 75])
+    quartiles = {
+        "name": name, "min": vals.min(), "q1": q1, "med": med,
+        "q3": q3, "max": vals.max(), "iqr": q3 - q1, "n": vals.size,
+    }
+
+    box_col = BOX_COLORS[color_idx % len(BOX_COLORS)]
+    pt_col  = _lighten(box_col, 0.45)
+
+    # sub-sample the swarm so point placement stays fast and uncrowded
+    rng = np.random.default_rng(0)
+    sub = vals if vals.size <= SWARM_MAX else rng.choice(vals, SWARM_MAX, replace=False)
+
+    fig, ax = plt.subplots(figsize=(7.0, 5.0))
+    fig.patch.set_facecolor(PALETTE["fig_bg"])
+    ax.set_facecolor("#FFFFFF")
+
+    with warnings.catch_warnings():
+        # silence internal seaborn/matplotlib deprecation chatter (e.g. `vert`)
+        warnings.simplefilter("ignore")
+        sns.boxplot(y=vals, ax=ax, width=0.4, color=box_col, saturation=0.9,
+                    showfliers=False, linewidth=1.3,
+                    medianprops=dict(color="#2C3E50", linewidth=1.8))
+        sns.swarmplot(y=sub, ax=ax, color=pt_col, size=4, alpha=0.95,
+                      edgecolor="#FFFFFF", linewidth=0.3)
+        if has_outliers:
+            osub = outl if outl.size <= SWARM_MAX else rng.choice(outl, SWARM_MAX, replace=False)
+            sns.swarmplot(y=osub, ax=ax, color=PALETTE["bar_peak"], marker="D",
+                          size=5, edgecolor=PALETTE["peak_edge"], linewidth=0.5)
+
+    if has_outliers:
+        handles = [
+            Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=pt_col,
+                   markeredgecolor="#FFFFFF", markersize=7, label="Samples"),
+            Line2D([0], [0], marker="D", linestyle="none",
+                   markerfacecolor=PALETTE["bar_peak"], markeredgecolor=PALETTE["peak_edge"],
+                   markersize=7, label=f"Outliers excl. from box ({outl.size})"),
+        ]
+        ax.legend(handles=handles, fontsize=8, framealpha=0.9,
+                  edgecolor="#CCCCCC", loc="best")
+
+    ax.set_xticks([0])
+    ax.set_xticklabels([name], fontsize=10)
+    ax.set_xlabel("")
+    ax.set_ylabel("Value", fontsize=11, labelpad=8)
+    for sp in ax.spines.values():
+        sp.set_visible(True)
+        sp.set_linewidth(0.9)
+        sp.set_color("#34495E")
+    ax.tick_params(labelsize=9)
+    fig.suptitle(f"Box Plot — {name}", fontsize=12, fontweight="bold", y=0.995)
+    subtitle = (f"n = {vals.size}  |  {outl.size} outlier(s) shown (excluded from box)"
+                if has_outliers else f"n = {vals.size}  |  samples overlaid (swarm)")
+    ax.set_title(subtitle, fontsize=9, color="#7F8C8D", pad=6)
+    plt.tight_layout(pad=1.5)
+
+    box_svg = out_stem + "_box.svg"
+    fig.savefig(box_svg, bbox_inches="tight")
+    fig.savefig(out_stem + "_box.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Box chart  -> {box_svg}")
+    return box_svg, quartiles
 
 
 # ── HTML report ───────────────────────────────────────────────────────────────
@@ -182,14 +281,28 @@ def build_percentile_chart(values, target, out_stem, save_png=True):
 DEFAULT_SHOW_COLS = {"time_s": True, "time_hms": True, "pct": True, "count": True}
 
 
+def _normalize_targets(target, cols):
+    """Expand the *target* argument into a per-channel list aligned with *cols*.
+
+    Accepts ``None`` (no targets), a scalar (same target for every channel),
+    a ``{column: value}`` mapping, or a list/tuple aligned with *cols* (missing
+    or empty entries become ``None``)."""
+    if target is None:
+        return [None] * len(cols)
+    if isinstance(target, dict):
+        return [target.get(c) for c in cols]
+    if isinstance(target, (list, tuple)):
+        return [target[i] if i < len(target) else None for i in range(len(cols))]
+    return [target] * len(cols)
+
+
 def build_html_report(
-    col, csv_path, title, time_source, y_label,
-    edges, counts, weights, values,
-    w_mean, w_std, p25, p50, p75, v_min, v_max,
-    total_weight, nbins, k, n_removed, chart_path,
-    show_cols=None, target=None,
-    pct_chart_path=None, deciles=None,
+    csv_path, title, time_source, nbins, k, channels,
+    show_cols=None,
 ):
+    """Build the multi-channel HTML report.  *channels* is a list of per-channel
+    dicts produced by :func:`make_histogram`, each describing one selected column
+    (its histogram/percentile/box-plot charts and the data for its tables)."""
     def _inline_svg(path):
         """Return the bare <svg>…</svg> content of a file for inline embedding."""
         if not (path and os.path.isfile(path)):
@@ -199,47 +312,29 @@ def build_html_report(
         m = re.search(r"<svg\b", raw, re.IGNORECASE)
         return raw[m.start():] if m else raw
 
-    sc           = {**DEFAULT_SHOW_COLS, **(show_cols or {})}
-    n_samples    = len(values)
-    raw_counts,_ = np.histogram(values, bins=edges)
-    report_title = title or f"Histogram — {col}"
-    file_name    = os.path.basename(csv_path)
-    chart_svg    = _inline_svg(chart_path)
-    has_time     = y_label == "Time [s]"
-    peak_idx     = int(np.argmax(counts))
+    def _chart(svg_path):
+        """Inline a chart SVG, preceded by a marker comment naming its companion
+        PNG.  The PDF exporter (which cannot render SVG) swaps each marked SVG for
+        the named PNG, so the mapping no longer depends on chart order/count."""
+        if not svg_path:
+            return ""
+        png_name = os.path.splitext(os.path.basename(svg_path))[0] + ".png"
+        return f'<!--PNG:{png_name}-->{_inline_svg(svg_path)}'
+
+    sc        = {**DEFAULT_SHOW_COLS, **(show_cols or {})}
+    file_name = os.path.basename(csv_path)
+    multi     = len(channels) > 1
+    col_list  = ", ".join(ch["col"] for ch in channels)
+    report_title = title or (("Histograms — " if multi else "Histogram — ") + col_list)
+    col_label = "Columns" if multi else "Column"
 
     outlier_note = (
-        f'&nbsp;|&nbsp; Outlier filter: <strong>k={k}</strong> '
-        f'({n_removed} sample{"s" if n_removed != 1 else ""} removed)'
+        f'&nbsp;|&nbsp; Outlier filter: <strong>k={k}</strong>'
     ) if k > 0 else ""
 
-    # ── determine visible optional columns ────────────────────────────────────
-    # Time group: [s], [hh:mm:ss], % — only available when has_time
-    # Samples group: Count
-    # Single % column: shows time-weighted % if has_time, else count %
-    t_cols = []
-    if has_time and sc["time_s"]:   t_cols.append("time_s")
-    if has_time and sc["time_hms"]: t_cols.append("time_hms")
-    if sc["pct"]:                   t_cols.append("pct")
-    s_cols = []
-    if sc["count"]:                 s_cols.append("count")
+    def _even(i):
+        return ' class="even-row"' if i % 2 == 0 else ""
 
-    # ── dynamic header ────────────────────────────────────────────────────────
-    grp_row = '<th rowspan="2">#</th><th rowspan="2">Bin range</th>'
-    sub_row = ""
-    if t_cols:
-        grp_label = "Time" if has_time else "Distribution"
-        grp_row  += f'<th colspan="{len(t_cols)}" class="grp">{grp_label}</th>'
-        for c in t_cols:
-            sub_row += {"time_s": "<th>[s]</th>",
-                        "time_hms": "<th>[hh:mm:ss]</th>",
-                        "pct": "<th>%</th>"}[c]
-    if s_cols:
-        grp_row += f'<th colspan="{len(s_cols)}" class="grp">Samples</th>'
-        for c in s_cols:
-            sub_row += {"count": "<th>Count</th>"}[c]
-
-    # ── data rows ─────────────────────────────────────────────────────────────
     def bar_cell(pct, fill_cls):
         return (
             f'<td class="num"><div class="bar-wrap">'
@@ -247,76 +342,138 @@ def build_html_report(
             f'<span class="bar-lbl">{pct:.2f}%</span></div></td>'
         )
 
-    rows = []
-    for i, (lo, hi, w, n) in enumerate(zip(edges[:-1], edges[1:], counts, raw_counts)):
-        pct_t = 100.0 * w / total_weight if total_weight else 0.0
-        pct_s = 100.0 * n / n_samples   if n_samples   else 0.0
-        cls   = (' class="peak-row"' if i == peak_idx
-                 else (' class="even-row"' if i % 2 == 0 else ""))
-        cells = f'<td class="num">{i+1}</td><td class="num">[{lo:.5g},&nbsp;{hi:.5g})</td>'
+    # ── per-channel bins table ────────────────────────────────────────────────
+    def bins_table(ch):
+        has_time     = ch["has_time"]
+        edges        = ch["edges"]
+        counts       = ch["counts"]
+        raw_counts   = ch["raw_counts"]
+        total_weight = ch["total_weight"]
+        n_samples    = ch["n_samples"]
+        peak_idx     = int(np.argmax(counts))
+
+        t_cols = []
+        if has_time and sc["time_s"]:   t_cols.append("time_s")
+        if has_time and sc["time_hms"]: t_cols.append("time_hms")
+        if sc["pct"]:                   t_cols.append("pct")
+        s_cols = ["count"] if sc["count"] else []
+
+        grp_row = '<th rowspan="2">#</th><th rowspan="2">Bin range</th>'
+        sub_row = ""
+        if t_cols:
+            grp_label = "Time" if has_time else "Distribution"
+            grp_row  += f'<th colspan="{len(t_cols)}" class="grp">{grp_label}</th>'
+            for c in t_cols:
+                sub_row += {"time_s": "<th>[s]</th>",
+                            "time_hms": "<th>[hh:mm:ss]</th>",
+                            "pct": "<th>%</th>"}[c]
+        if s_cols:
+            grp_row += f'<th colspan="{len(s_cols)}" class="grp">Samples</th>'
+            sub_row += "<th>Count</th>"
+
+        rows = []
+        for i, (lo, hi, w, n) in enumerate(zip(edges[:-1], edges[1:], counts, raw_counts)):
+            pct_t = 100.0 * w / total_weight if total_weight else 0.0
+            pct_s = 100.0 * n / n_samples   if n_samples   else 0.0
+            cls   = (' class="peak-row"' if i == peak_idx
+                     else (' class="even-row"' if i % 2 == 0 else ""))
+            cells = f'<td class="num">{i+1}</td><td class="num">[{lo:.5g},&nbsp;{hi:.5g})</td>'
+            for c in t_cols:
+                if   c == "time_s":  cells += f'<td class="num">{w:,.2f}</td>'
+                elif c == "time_hms":cells += f'<td class="num">{seconds_to_hhmmss(w)}</td>'
+                elif c == "pct":     cells += bar_cell(pct_t if has_time else pct_s, "t")
+            for c in s_cols:
+                if c == "count": cells += f'<td class="num">{n}</td>'
+            rows.append(f'<tr{cls}>{cells}</tr>')
+
+        tot_cells = '<td class="num tot" colspan="2">TOTAL</td>'
         for c in t_cols:
-            if   c == "time_s":  cells += f'<td class="num">{w:,.2f}</td>'
-            elif c == "time_hms":cells += f'<td class="num">{seconds_to_hhmmss(w)}</td>'
-            elif c == "pct":     cells += bar_cell(pct_t if has_time else pct_s, "t")
+            if   c == "time_s":  tot_cells += f'<td class="num tot">{total_weight:,.2f}</td>'
+            elif c == "time_hms":tot_cells += f'<td class="num tot">{seconds_to_hhmmss(total_weight)}</td>'
+            elif c == "pct":     tot_cells += '<td class="num tot">100.00%</td>'
         for c in s_cols:
-            if c == "count": cells += f'<td class="num">{n}</td>'
-        rows.append(f'<tr{cls}>{cells}</tr>')
+            if c == "count": tot_cells += f'<td class="num tot">{n_samples}</td>'
+        rows.append(f'<tr class="tot-row">{tot_cells}</tr>')
 
-    # totals row
-    tot_cells = '<td class="num tot" colspan="2">TOTAL</td>'
-    for c in t_cols:
-        if   c == "time_s":  tot_cells += f'<td class="num tot">{total_weight:,.2f}</td>'
-        elif c == "time_hms":tot_cells += f'<td class="num tot">{seconds_to_hhmmss(total_weight)}</td>'
-        elif c == "pct":     tot_cells += '<td class="num tot">100.00%</td>'
-    for c in s_cols:
-        if c == "count": tot_cells += f'<td class="num tot">{n_samples}</td>'
-    rows.append(f'<tr class="tot-row">{tot_cells}</tr>')
+        return (f'<table><thead><tr>{grp_row}</tr><tr>{sub_row}</tr></thead>'
+                f'<tbody>{"".join(rows)}</tbody></table>')
 
-    # ── stat cards ────────────────────────────────────────────────────────────
-    time_card = (
-        f'<div class="card" style="border-left:4px solid #1A5276">'
-        f'<div class="lbl">Total time</div>'
-        f'<div class="val" style="color:#1A5276">{seconds_to_hhmmss(total_weight)}</div></div>'
-    ) if has_time else ""
-    outlier_card = (
-        f'<div class="card" style="border-left:4px solid #D35400">'
-        f'<div class="lbl">Outliers removed</div>'
-        f'<div class="val" style="color:#D35400">{n_removed}</div></div>'
-    ) if k > 0 else ""
-    target_card = (
-        f'<div class="card" style="border-left:4px solid #8E44AD">'
-        f'<div class="lbl">Target</div>'
-        f'<div class="val" style="color:#8E44AD">{target:.5g}</div></div>'
-    ) if target is not None else ""
-
-    # ── percentile / decile section ───────────────────────────────────────────
-    if pct_chart_path and deciles is not None:
-        pct_chart_svg = _inline_svg(pct_chart_path)
+    # ── per-channel deciles table ─────────────────────────────────────────────
+    def deciles_table(deciles):
         dlabels = (["Min (P0)"]
                    + [f"D{i} &nbsp;(P{i*10})" for i in range(1, 10)]
                    + ["Max (P100)"])
-        d_rows_list = []
-        for i, (lbl, val) in enumerate(zip(dlabels, deciles)):
-            cls = "" if i % 2 else ' class="even-row"'
-            d_rows_list.append(
-                f'<tr{cls}><td class="num">{lbl}</td>'
-                f'<td class="pct-d">{val:.5g}%</td></tr>'
-            )
-        d_rows = "".join(d_rows_list)
-        pct_section = f"""
-<h2 class="sec-title">Relative Error Analysis &nbsp;&mdash;&nbsp; | (y(t) &minus; target) &middot; 100 / target |</h2>
-<div class="chart-wrap">{pct_chart_svg}</div>
-<table style="max-width:480px;margin-bottom:1.8rem">
-  <thead>
-    <tr>
-      <th style="width:170px">Decile</th>
-      <th>Error&nbsp;&nbsp;|&thinsp;(y(t)&thinsp;&minus;&thinsp;target)&thinsp;&middot;&thinsp;100&thinsp;/&thinsp;target&thinsp;|&nbsp;&nbsp;[%]</th>
-    </tr>
-  </thead>
-  <tbody>{d_rows}</tbody>
-</table>"""
-    else:
-        pct_section = ""
+        d_rows = "".join(
+            f'<tr{_even(i)}>'
+            f'<td class="num">{lbl}</td><td class="pct-d">{val:.5g}%</td></tr>'
+            for i, (lbl, val) in enumerate(zip(dlabels, deciles))
+        )
+        return (
+            '<table><thead><tr>'
+            '<th style="width:170px">Decile</th>'
+            '<th>Error&nbsp;&nbsp;|&thinsp;(y(t)&thinsp;&minus;&thinsp;target)'
+            '&thinsp;&middot;&thinsp;100&thinsp;/&thinsp;target&thinsp;|&nbsp;&nbsp;[%]</th>'
+            f'</tr></thead><tbody>{d_rows}</tbody></table>'
+        )
+
+    # ── per-channel quartiles table (vertical, one channel) ───────────────────
+    def quartiles_table(q):
+        stats = [
+            ("Min", f'{q["min"]:.5g}'),
+            ("Q1 &nbsp;(P25)", f'{q["q1"]:.5g}'),
+            ("Median &nbsp;(P50)", f'{q["med"]:.5g}'),
+            ("Q3 &nbsp;(P75)", f'{q["q3"]:.5g}'),
+            ("Max", f'{q["max"]:.5g}'),
+            ("IQR", f'{q["iqr"]:.5g}'),
+            ("N", f'{q["n"]}'),
+        ]
+        q_rows = "".join(
+            f'<tr{_even(i)}><td>{lbl}</td><td class="num">{val}</td></tr>'
+            for i, (lbl, val) in enumerate(stats)
+        )
+        return (
+            '<table><thead><tr>'
+            '<th style="width:150px">Statistic</th><th>Value</th>'
+            f'</tr></thead><tbody>{q_rows}</tbody></table>'
+        )
+
+    def chan_label(ch):
+        return f'<div class="chan-label">{ch["col"]}</div>' if multi else ""
+
+    def panel(chart_svg_path, table_html):
+        return (
+            '<div class="panel-row">'
+            f'<div class="chart-wrap">{_chart(chart_svg_path)}</div>'
+            f'<div class="side-panel">{table_html}</div>'
+            '</div>'
+        )
+
+    # ── histogram section (one stacked chart+table per channel) ───────────────
+    hist_blocks = "".join(
+        chan_label(ch) + panel(ch["hist_svg"], bins_table(ch)) for ch in channels
+    )
+    hist_section = ('<h2 class="sec-title">Histograms</h2>'
+                    if multi else '') + hist_blocks
+
+    # ── percentile / decile section ───────────────────────────────────────────
+    pct_blocks = "".join(
+        chan_label(ch) + panel(ch["pct_svg"], deciles_table(ch["deciles"]))
+        for ch in channels if ch.get("deciles") is not None
+    )
+    pct_section = (
+        '<h2 class="sec-title">Relative Error Analysis &nbsp;&mdash;&nbsp; '
+        '| (y(t) &minus; target) &middot; 100 / target |</h2>' + pct_blocks
+    ) if pct_blocks else ""
+
+    # ── box-plot / quartiles section ──────────────────────────────────────────
+    box_blocks = "".join(
+        chan_label(ch) + panel(ch["box_svg"], quartiles_table(ch["quartiles"]))
+        for ch in channels if ch.get("quartiles")
+    )
+    box_section = (
+        '<h2 class="sec-title">Channel Distribution &nbsp;&mdash;&nbsp; '
+        'Box Plots &amp; Quartiles</h2>' + box_blocks
+    ) if box_blocks else ""
 
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -332,14 +489,16 @@ header{{border-left:6px solid var(--B);padding:.6rem 1.2rem;margin-bottom:1.6rem
         background:var(--card);box-shadow:0 1px 4px rgba(0,0,0,.08);border-radius:0 6px 6px 0}}
 header h1{{font-size:1.5rem;color:var(--BD)}}
 header p{{font-size:.82rem;color:var(--mu);margin-top:.25rem}}
-.cards{{display:flex;flex-wrap:wrap;gap:.9rem;margin-bottom:1.8rem}}
-.card{{background:var(--card);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.08);
-       padding:.9rem 1.3rem;min-width:130px;flex:1}}
-.lbl{{font-size:.72rem;color:var(--mu);text-transform:uppercase;letter-spacing:.06em}}
-.val{{font-size:1.25rem;font-weight:700;color:var(--BD);margin-top:.2rem}}
 .chart-wrap{{background:var(--card);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,.08);
              padding:1rem;margin-bottom:1.8rem;text-align:center}}
 .chart-wrap img{{max-width:100%;border-radius:4px}}
+.chart-wrap svg{{max-width:100%;height:auto}}
+.panel-row{{display:flex;flex-wrap:wrap;gap:1.2rem;align-items:flex-start;margin-bottom:1.8rem}}
+.panel-row>.chart-wrap{{flex:1.4 1 440px;margin-bottom:0;min-width:0}}
+.panel-row>.side-panel{{flex:1 1 320px;min-width:0;overflow-x:auto}}
+.panel-row>.side-panel>table{{margin-bottom:0}}
+.chan-label{{font-size:1rem;font-weight:700;color:var(--B);margin:1.4rem 0 .5rem;
+             padding-left:.2rem;border-left:3px solid var(--B);padding:.1rem .6rem}}
 table{{width:100%;border-collapse:collapse;background:var(--card);border-radius:8px;
        overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08);font-size:.86rem}}
 thead th{{background:var(--BD);color:#fff;padding:.65rem .8rem;text-align:center;
@@ -371,29 +530,13 @@ td.pct-d{{text-align:right;font-family:Consolas,monospace;color:#8E44AD;font-wei
 <body>
 <header>
   <h1>{report_title}</h1>
-  <p>File: <strong>{file_name}</strong> &nbsp;|&nbsp; Column: <strong>{col}</strong>
+  <p>File: <strong>{file_name}</strong> &nbsp;|&nbsp; {col_label}: <strong>{col_list}</strong>
      &nbsp;|&nbsp; Bins: <strong>{nbins}</strong>
      &nbsp;|&nbsp; Time: <strong>{time_source}</strong>{outlier_note}</p>
 </header>
-<div class="chart-wrap">{chart_svg}</div>
-<table>
-  <thead>
-    <tr>{grp_row}</tr>
-    <tr>{sub_row}</tr>
-  </thead>
-  <tbody>{"".join(rows)}</tbody>
-</table>
-<div class="cards" style="margin-top:1.8rem">
-  <div class="card" style="border-left:4px solid #2E86AB"><div class="lbl">Samples</div><div class="val" style="color:#2E86AB">{n_samples}</div></div>
-  <div class="card" style="border-left:4px solid #1ABC9C"><div class="lbl">Min</div><div class="val" style="color:#1ABC9C">{v_min:.5g}</div></div>
-  <div class="card" style="border-left:4px solid #E74C3C"><div class="lbl">Max</div><div class="val" style="color:#E74C3C">{v_max:.5g}</div></div>
-  <div class="card" style="border-left:4px solid #F39C12"><div class="lbl">Mean</div><div class="val" style="color:#F39C12">{w_mean:.5g}</div></div>
-  <div class="card" style="border-left:4px solid #E67E22"><div class="lbl">Std dev</div><div class="val" style="color:#E67E22">{w_std:.5g}</div></div>
-  <div class="card" style="border-left:4px solid #27AE60"><div class="lbl">Median (P50)</div><div class="val" style="color:#27AE60">{p50:.5g}</div></div>
-  <div class="card" style="border-left:4px solid #16A085"><div class="lbl">P25 / P75</div><div class="val" style="color:#16A085">{p25:.4g} / {p75:.4g}</div></div>
-  {time_card}{outlier_card}{target_card}
-</div>
+{hist_section}
 {pct_section}
+{box_section}
 <footer>
   Generated by histogram.py &nbsp;·&nbsp; {file_name} &nbsp;·&nbsp; Experimental - FAdeA<br>
   bugs: report to <a href="mailto:mvaldez@fadeasa.com.ar">Eng. Marcelo Valdez</a>
@@ -414,81 +557,15 @@ PALETTE = {
 }
 
 
-def make_histogram(col, csv_path, time_col_arg, nbins, title, k=0.0, show_cols=None, out_name=None, target=None, save_png=True, show_plot=True):
-    """Core engine — called by both CLI and GUI paths."""
-    if not os.path.isfile(csv_path):
-        raise FileNotFoundError(f"File not found: {csv_path}")
-
-    df = load_csv(csv_path)
-
-    if col not in df.columns:
-        raise ValueError(
-            f"Column {col!r} not found.\nAvailable: {list(df.columns)}"
-        )
-
-    # ── time column ───────────────────────────────────────────────────────────
-    if time_col_arg and time_col_arg not in (AUTO_DETECT_LABEL, NONE_LABEL):
-        if time_col_arg not in df.columns:
-            raise ValueError(
-                f"Time column {time_col_arg!r} not found.\n"
-                f"Available: {list(df.columns)}"
-            )
-        time_col    = time_col_arg
-        time_source = f'"{time_col}" (user-specified)'
-    elif time_col_arg == NONE_LABEL:
-        time_col    = None
-        time_source = "disabled by user"
-    else:
-        time_col    = find_time_col(df.columns)
-        time_source = f'"{time_col}" (auto-detected)' if time_col else "uniform — 1 sample/s assumed"
-
-    # ── data & weights ────────────────────────────────────────────────────────
-    valid_mask = df[col].notna()
-    values     = df.loc[valid_mask, col].values.astype(float)
-
-    if time_col:
-        weights = time_weights(df[valid_mask], time_col)
-        y_label = "Time [s]"
-    else:
-        weights = np.ones(len(values))
-        y_label = "Count"
-
-    # ── outlier removal ───────────────────────────────────────────────────────
-    n_before  = len(values)
-    values, weights = remove_outliers(values, weights, k)
-    n_removed = n_before - len(values)
-
-    if len(values) == 0:
-        raise ValueError("No data remaining after outlier removal. Lower k.")
-
-    # ── statistics ────────────────────────────────────────────────────────────
-    total_weight = weights.sum()
-    w_mean = np.average(values, weights=weights)
-    w_var  = np.average((values - w_mean) ** 2, weights=weights)
-    w_std  = np.sqrt(w_var)
-    p25, p50, p75 = np.percentile(values, [25, 50, 75])
-    v_min, v_max  = values.min(), values.max()
-
-    # ── histogram ─────────────────────────────────────────────────────────────
-    counts, edges = np.histogram(values, bins=nbins, weights=weights)
+def build_histogram_chart(col, values, weights, counts, edges, stats, target,
+                          y_label, time_col, k, n_removed, nbins,
+                          main_title, sub_title, out_stem):
+    """Build and save one channel's histogram figure (SVG + companion PNG).
+    Returns ``(fig, svg_path)`` — the caller closes or shows the figure."""
+    w_mean, w_std, p25, p50, p75, v_min, v_max, total_weight = stats
     centers   = 0.5 * (edges[:-1] + edges[1:])
     bin_width = edges[1] - edges[0]
 
-    # ── chart title ───────────────────────────────────────────────────────────
-    k_note = f"   |   Outlier k={k}" if k > 0 else ""
-    if title:
-        main_title = title
-        sub_title  = (
-            f"File: {os.path.basename(csv_path)}   |   Column: {col}"
-            f"   |   Time: {time_source}{k_note}"
-        )
-    else:
-        main_title = f"Histogram  —  {col}"
-        sub_title  = (
-            f"File: {os.path.basename(csv_path)}   |   Time: {time_source}{k_note}"
-        )
-
-    # ── figure ────────────────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(11, 6.5))
     fig.patch.set_facecolor(PALETTE["fig_bg"])
     ax.set_facecolor("#FFFFFF")
@@ -564,32 +641,147 @@ def make_histogram(col, csv_path, time_col_arg, nbins, title, k=0.0, show_cols=N
     ax.legend(loc="upper left", fontsize=9, framealpha=0.9, edgecolor="#CCCCCC")
     plt.tight_layout(pad=1.5)
 
-    # ── outputs ───────────────────────────────────────────────────────────────
+    svg_path = out_stem + ".svg"
+    fig.savefig(svg_path, bbox_inches="tight")
+    fig.savefig(out_stem + ".png", dpi=150, bbox_inches="tight")
+    print(f"Chart saved  -> {svg_path}")
+    return fig, svg_path
+
+
+def make_histogram(cols, csv_path, time_col_arg, nbins, title, k=0.0,
+                   show_cols=None, out_name=None, target=None, show_plot=True):
+    """Core engine — called by both CLI and GUI paths.
+
+    *cols* may be a single column name or a list of column names; one combined
+    HTML report is produced with a stacked chart + table block per channel."""
+    if not os.path.isfile(csv_path):
+        raise FileNotFoundError(f"File not found: {csv_path}")
+
+    df = load_csv(csv_path)
+
+    if isinstance(cols, str):
+        cols = [cols]
+    if not cols:
+        raise ValueError("No column selected.")
+    for col in cols:
+        if col not in df.columns:
+            raise ValueError(
+                f"Column {col!r} not found.\nAvailable: {list(df.columns)}"
+            )
+
+    # ── time column (shared by every channel) ─────────────────────────────────
+    if time_col_arg and time_col_arg not in (AUTO_DETECT_LABEL, NONE_LABEL):
+        if time_col_arg not in df.columns:
+            raise ValueError(
+                f"Time column {time_col_arg!r} not found.\n"
+                f"Available: {list(df.columns)}"
+            )
+        time_col    = time_col_arg
+        time_source = f'"{time_col}" (user-specified)'
+    elif time_col_arg == NONE_LABEL:
+        time_col    = None
+        time_source = "disabled by user"
+    else:
+        time_col    = find_time_col(df.columns)
+        time_source = f'"{time_col}" (auto-detected)' if time_col else "uniform — 1 sample/s assumed"
+
+    # ── report output stem ────────────────────────────────────────────────────
     if out_name:
         base     = os.path.splitext(out_name)[0]   # strip extension if user added one
         out_stem = os.path.join(os.path.dirname(csv_path), base)
+    elif len(cols) == 1:
+        out_stem = os.path.splitext(csv_path)[0] + "_hist_" + safe_col_name(cols[0])
     else:
-        out_stem = os.path.splitext(csv_path)[0] + "_hist_" + safe_col_name(col)
-    svg_path  = out_stem + ".svg"
+        out_stem = os.path.splitext(csv_path)[0] + "_hist"
     html_path = out_stem + ".html"
 
-    fig.savefig(svg_path, bbox_inches="tight")
-    if save_png:
-        fig.savefig(out_stem + ".png", dpi=150, bbox_inches="tight")
-    print(f"Chart saved  -> {svg_path}")
+    k_note = f"   |   Outlier k={k}" if k > 0 else ""
 
-    pct_chart_path, deciles = (
-        build_percentile_chart(values, target, out_stem, save_png=save_png)
-        if target is not None else (None, None)
-    )
+    # per-channel targets: scalar → all channels; dict {col: val}; list aligned
+    # with *cols*; None → no targets
+    chan_targets = _normalize_targets(target, cols)
+
+    channels = []
+    figs     = []
+    for idx, col in enumerate(cols):
+        chan_stem = out_stem if len(cols) == 1 else f"{out_stem}_{safe_col_name(col)}"
+        tgt       = chan_targets[idx]
+
+        # ── data & weights ────────────────────────────────────────────────────
+        valid_mask = df[col].notna()
+        raw_values = df.loc[valid_mask, col].values.astype(float)
+        if time_col:
+            raw_weights = time_weights(df[valid_mask], time_col)
+            y_label     = "Time [s]"
+        else:
+            raw_weights = np.ones(len(raw_values))
+            y_label     = "Count"
+
+        # ── outlier removal ───────────────────────────────────────────────────
+        n_before        = len(raw_values)
+        values, weights = remove_outliers(raw_values, raw_weights, k)
+        n_removed       = n_before - len(values)
+        if len(values) == 0:
+            raise ValueError(
+                f"No data remaining for column {col!r} after outlier removal. Lower k."
+            )
+
+        # outliers kept aside so the box-plot can still show them as points
+        if n_removed > 0:
+            q1o, q3o = np.percentile(raw_values, [25, 75])
+            iqro     = q3o - q1o
+            lo_o, hi_o = q1o - k * iqro, q3o + k * iqro
+            outlier_values = raw_values[(raw_values < lo_o) | (raw_values > hi_o)]
+        else:
+            outlier_values = np.empty(0)
+
+        # ── statistics ────────────────────────────────────────────────────────
+        total_weight = weights.sum()
+        w_mean = np.average(values, weights=weights)
+        w_std  = np.sqrt(np.average((values - w_mean) ** 2, weights=weights))
+        p25, p50, p75 = np.percentile(values, [25, 50, 75])
+        v_min, v_max  = values.min(), values.max()
+
+        counts, edges  = np.histogram(values, bins=nbins, weights=weights)
+        raw_counts, _  = np.histogram(values, bins=edges)
+
+        # ── chart titles ──────────────────────────────────────────────────────
+        if title:
+            main_title = f"{title} — {col}" if len(cols) > 1 else title
+        else:
+            main_title = f"Histogram  —  {col}"
+        sub_title = (
+            f"File: {os.path.basename(csv_path)}   |   Column: {col}"
+            f"   |   Time: {time_source}{k_note}"
+        )
+
+        stats = (w_mean, w_std, p25, p50, p75, v_min, v_max, total_weight)
+        fig, hist_svg = build_histogram_chart(
+            col, values, weights, counts, edges, stats, tgt,
+            y_label, time_col, k, n_removed, nbins,
+            main_title, sub_title, chan_stem,
+        )
+        figs.append(fig)
+
+        pct_svg, deciles = (
+            build_percentile_chart(values, tgt, chan_stem)
+            if tgt is not None else (None, None)
+        )
+        box_svg, quartiles = build_boxplot_chart(
+            values, col, chan_stem, color_idx=idx, outliers=outlier_values
+        )
+
+        channels.append(dict(
+            col=col, has_time=(time_col is not None), y_label=y_label,
+            edges=edges, counts=counts, raw_counts=raw_counts,
+            total_weight=total_weight, n_samples=len(values), n_removed=n_removed,
+            hist_svg=hist_svg, pct_svg=pct_svg, deciles=deciles,
+            box_svg=box_svg, quartiles=quartiles,
+        ))
 
     html = build_html_report(
-        col, csv_path, title, time_source, y_label,
-        edges, counts, weights, values,
-        w_mean, w_std, p25, p50, p75, v_min, v_max,
-        total_weight, nbins, k, n_removed, svg_path,
-        show_cols=show_cols, target=target,
-        pct_chart_path=pct_chart_path, deciles=deciles,
+        csv_path, title, time_source, nbins, k, channels,
+        show_cols=show_cols,
     )
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -598,8 +790,9 @@ def make_histogram(col, csv_path, time_col_arg, nbins, title, k=0.0, show_cols=N
     if show_plot:
         plt.show()
     else:
-        plt.close()
-    return svg_path, html_path
+        for fig in figs:
+            plt.close(fig)
+    return channels[0]["hist_svg"], html_path
 
 
 # ── PDF export ────────────────────────────────────────────────────────────────
@@ -633,22 +826,24 @@ def html_to_pdf(html_path):
             html,
         )
 
-    # Replace inline SVG blocks with companion PNG (xhtml2pdf cannot render SVG)
-    out_stem    = os.path.splitext(os.path.abspath(html_path))[0]
-    png_paths   = [out_stem + ".png", out_stem + "_pct.png"]
-    svg_counter = [0]
-
+    # Replace inline SVG blocks with their companion PNG (xhtml2pdf cannot render
+    # SVG).  Each chart is emitted by build_html_report as
+    #   <!--PNG:basename.png--><svg…>…</svg>
+    # so we map every marked SVG to the exact PNG it names — robust no matter how
+    # many charts (channels) are present or in what order.
     def _svg_to_png(m):
-        idx = svg_counter[0]
-        svg_counter[0] += 1
-        if idx < len(png_paths) and os.path.isfile(png_paths[idx]):
-            with open(png_paths[idx], "rb") as f:
+        png_name = m.group("png").strip()
+        png_path = os.path.join(html_dir, png_name)
+        if png_name and os.path.isfile(png_path):
+            with open(png_path, "rb") as f:
                 data = base64.b64encode(f.read()).decode()
             return f'<img src="data:image/png;base64,{data}" style="max-width:100%">'
         return ""
 
-    html = re.sub(r"<svg\b[^>]*>.*?</svg>", _svg_to_png, html,
-                  flags=re.DOTALL | re.IGNORECASE)
+    html = re.sub(
+        r"<!--PNG:(?P<png>[^>]*?)-->\s*<svg\b[^>]*>.*?</svg>",
+        _svg_to_png, html, flags=re.DOTALL | re.IGNORECASE,
+    )
 
     with open(pdf_path, "wb") as out:
         result = pisa.CreatePDF(html, dest=out, encoding="utf-8")
@@ -670,7 +865,7 @@ def run_gui():
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QFormLayout, QLabel, QLineEdit, QPushButton, QComboBox,
         QSpinBox, QDoubleSpinBox, QFileDialog, QFrame, QCheckBox, QDialog,
-        QMessageBox, QProgressDialog,
+        QMessageBox, QProgressDialog, QListWidget, QAbstractItemView,
     )
     from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
     from PyQt5.QtGui import QFont, QIcon
@@ -872,6 +1067,8 @@ def run_gui():
                 self.setWindowIcon(QIcon(APP_ICON_PATH))
             self.setMinimumWidth(580)
             self._last_html = None
+            self._target_edits  = {}   # col -> QLineEdit currently shown
+            self._target_values = {}   # col -> last entered target text (persisted)
             self._build_ui()
             self._restore_config()
 
@@ -914,10 +1111,18 @@ def run_gui():
             file_row.addWidget(btn_browse)
             form.addRow("Input file:", file_row)
 
-            # column
-            self.w_col = QComboBox()
+            # column(s) — multi-select; one chart+table block per selected channel
+            self.w_col = QListWidget()
+            self.w_col.setSelectionMode(QAbstractItemView.MultiSelection)
             self.w_col.setEnabled(False)
-            form.addRow("Column:", self.w_col)
+            self.w_col.setMaximumHeight(120)
+            col_box = QVBoxLayout()
+            col_box.setSpacing(2)
+            col_box.addWidget(self.w_col)
+            col_hint = QLabel("click to select one or more channels")
+            col_hint.setStyleSheet("color:#5D6D7E; font-size:11px;")
+            col_box.addWidget(col_hint)
+            form.addRow("Column(s):", col_box)
 
             # time column
             self.w_time = QComboBox()
@@ -951,10 +1156,20 @@ def run_gui():
             self.w_title.setPlaceholderText("Optional chart / report title")
             form.addRow("Title:", self.w_title)
 
-            # target value
-            self.w_target = QLineEdit()
-            self.w_target.setPlaceholderText("Optional — numeric reference value")
-            form.addRow("Target:", self.w_target)
+            # per-channel target values — one numeric field per selected channel,
+            # rebuilt whenever the column selection changes
+            target_container = QWidget()
+            self.w_target_form = QFormLayout(target_container)
+            self.w_target_form.setContentsMargins(0, 0, 0, 0)
+            self.w_target_form.setSpacing(6)
+            target_box = QVBoxLayout()
+            target_box.setSpacing(2)
+            target_box.addWidget(target_container)
+            target_hint = QLabel("optional numeric reference per channel")
+            target_hint.setStyleSheet("color:#5D6D7E; font-size:11px;")
+            target_box.addWidget(target_hint)
+            form.addRow("Target(s):", target_box)
+            self.w_col.itemSelectionChanged.connect(self._rebuild_targets)
 
             # output name
             self.w_out = QLineEdit()
@@ -1090,7 +1305,30 @@ def run_gui():
             if path:
                 self.w_file.setText(path)
 
+        def _selected_cols(self):
+            return [self.w_col.item(i).text()
+                    for i in range(self.w_col.count())
+                    if self.w_col.item(i).isSelected()]
+
+        def _rebuild_targets(self):
+            """Show one target field per currently-selected channel, preserving
+            any values the user already typed."""
+            # snapshot what is on screen, then rebuild from the selection
+            for col, edit in self._target_edits.items():
+                self._target_values[col] = edit.text().strip()
+            while self.w_target_form.rowCount():
+                self.w_target_form.removeRow(0)
+            self._target_edits = {}
+            for col in self._selected_cols():
+                edit = QLineEdit()
+                edit.setPlaceholderText("Optional — numeric reference")
+                if self._target_values.get(col):
+                    edit.setText(self._target_values[col])
+                self.w_target_form.addRow(col + ":", edit)
+                self._target_edits[col] = edit
+
         def _on_file_changed(self, path):
+            self._target_values = {}
             self.w_col.clear()
             self.w_time.clear()
             self.w_col.setEnabled(False)
@@ -1103,6 +1341,8 @@ def run_gui():
                 cols = list(df.columns)
                 self.w_col.addItems(cols)
                 self.w_col.setEnabled(True)
+                if self.w_col.count():
+                    self.w_col.item(0).setSelected(True)
 
                 self.w_time.addItems([AUTO_DETECT_LABEL, NONE_LABEL] + cols)
                 # pre-select known time column
@@ -1123,9 +1363,13 @@ def run_gui():
             path = cfg.get("csv_path", "")
             if path:
                 self.w_file.setText(path)          # triggers _on_file_changed
-            # column dropdowns are populated by _on_file_changed; set after
-            if cfg.get("col") and self.w_col.findText(cfg["col"]) >= 0:
-                self.w_col.setCurrentText(cfg["col"])
+            # column list is populated by _on_file_changed; restore selection
+            saved_cols = [c for c in (cfg.get("cols", "") or cfg.get("col", "")).split(";") if c]
+            if saved_cols:
+                self.w_col.clearSelection()
+                for i in range(self.w_col.count()):
+                    if self.w_col.item(i).text() in saved_cols:
+                        self.w_col.item(i).setSelected(True)
             if cfg.get("time_col") and self.w_time.findText(cfg["time_col"]) >= 0:
                 self.w_time.setCurrentText(cfg["time_col"])
             try:
@@ -1137,7 +1381,17 @@ def run_gui():
             except ValueError:
                 pass
             self.w_title.setText(cfg.get("title", ""))
-            self.w_target.setText(cfg.get("target", ""))
+            # per-channel targets, stored as "col=value;col=value"
+            saved_targets = {}
+            for pair in cfg.get("targets", "").split(";"):
+                if "=" in pair:
+                    c, v = pair.split("=", 1)
+                    if c:
+                        saved_targets[c] = v
+            self._target_values.update(saved_targets)
+            for col, edit in self._target_edits.items():
+                if col in saved_targets:
+                    edit.setText(saved_targets[col])
             self.w_out.setText(cfg.get("out_name", ""))
             self.ck_time_s.setChecked(  cfg.get("col_time_s",   "1") != "0")
             self.ck_time_hms.setChecked(cfg.get("col_time_hms", "1") != "0")
@@ -1145,21 +1399,33 @@ def run_gui():
             self.ck_count.setChecked(   cfg.get("col_count",    "1") != "0")
 
         def _run(self):
-            target_str = self.w_target.text().strip()
-            try:
-                target = float(target_str) if target_str else None
-            except ValueError:
-                self._set_status("✖  Target must be a numeric value.", "err")
+            sel_cols = self._selected_cols()
+            if not sel_cols:
+                self._set_status("✖  Select at least one column.", "err")
                 return
+
+            # per-channel targets (only the selected channels have a field)
+            targets = {}
+            for col, edit in self._target_edits.items():
+                txt = edit.text().strip()
+                if not txt:
+                    continue
+                try:
+                    targets[col] = float(txt)
+                except ValueError:
+                    self._set_status(f"✖  Target for '{col}' must be numeric.", "err")
+                    return
+            target = targets or None
+            targets_cfg = ";".join(f"{c}={v}" for c, v in targets.items())
 
             _save_cfg({
                 "csv_path": self.w_file.text(),
-                "col":      self.w_col.currentText(),
+                "cols":     ";".join(sel_cols),
                 "time_col": self.w_time.currentText(),
                 "bins":     self.w_bins.value(),
                 "k":        self.w_k.value(),
                 "title":    self.w_title.text().strip(),
-                "target":   target_str,
+                "targets":  targets_cfg,
                 "out_name": self.w_out.text().strip(),
                 "col_time_s":   int(self.ck_time_s.isChecked()),
                 "col_time_hms": int(self.ck_time_hms.isChecked()),
@@ -1171,7 +1437,7 @@ def run_gui():
             QApplication.processEvents()
             try:
                 svg, html = make_histogram(
-                    col          = self.w_col.currentText(),
+                    cols         = sel_cols,
                     csv_path     = self.w_file.text(),
                     time_col_arg = self.w_time.currentText(),
                     nbins        = self.w_bins.value(),
@@ -1179,7 +1445,6 @@ def run_gui():
                     k            = self.w_k.value(),
                     out_name     = self.w_out.text().strip() or None,
                     target       = target,
-                    save_png     = False,
                     show_plot    = False,
                     show_cols    = {
                         "time_s":   self.ck_time_s.isChecked(),
@@ -1321,7 +1586,7 @@ def run_gui():
 
 
 def parse_cli(argv):
-    col      = argv[1]
+    cols     = [c.strip() for c in argv[1].split(",") if c.strip()]
     csv_path = argv[2]
     if not os.path.splitext(csv_path)[1]:
         csv_path += ".csv"
@@ -1360,14 +1625,19 @@ def parse_cli(argv):
         elif key == "out":
             out_name = val
         elif key == "target":
+            # single number → applies to every column; comma-separated list →
+            # one target per column (blank entries leave that column without one)
             try:
-                target = float(val)
+                if "," in val:
+                    target = [float(x) if x.strip() else None for x in val.split(",")]
+                else:
+                    target = float(val)
             except ValueError:
-                sys.exit("target= must be a number.")
+                sys.exit("target= must be a number (or comma-separated numbers).")
         else:
             sys.exit(f"Unknown keyword: {key!r}. Supported: t, bins, k, title, out, target.")
 
-    return dict(col=col, csv_path=csv_path, time_col_arg=time_col_arg,
+    return dict(cols=cols, csv_path=csv_path, time_col_arg=time_col_arg,
                 nbins=nbins, title=title, k=k, out_name=out_name, target=target)
 
 
