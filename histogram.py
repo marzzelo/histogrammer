@@ -194,7 +194,7 @@ def _lighten(color, amount=0.45):
     return (r + (1 - r) * amount, g + (1 - g) * amount, b + (1 - b) * amount)
 
 
-def build_boxplot_chart(values, name, out_stem, color_idx=0, outliers=None):
+def build_boxplot_chart(values, name, out_stem, color_idx=0, outliers=None, target=None):
     """Single-channel seaborn box-plot with the individual samples overlaid as a
     swarm.  Returns (svg_path, quartiles) where *quartiles* is one stat dict, or
     (None, None) if there is no data.
@@ -234,21 +234,32 @@ def build_boxplot_chart(values, name, out_stem, color_idx=0, outliers=None):
         sns.boxplot(y=vals, ax=ax, width=0.4, color=box_col, saturation=0.9,
                     showfliers=False, linewidth=1.3,
                     medianprops=dict(color="#2C3E50", linewidth=1.8))
-        sns.swarmplot(y=sub, ax=ax, color=pt_col, size=4, alpha=0.95,
+        sns.swarmplot(y=sub, ax=ax, color=pt_col, size=4, alpha=0.55,
                       edgecolor="#FFFFFF", linewidth=0.3)
         if has_outliers:
             osub = outl if outl.size <= SWARM_MAX else rng.choice(outl, SWARM_MAX, replace=False)
-            sns.swarmplot(y=osub, ax=ax, color=PALETTE["bar_peak"], marker="D",
-                          size=5, edgecolor=PALETTE["peak_edge"], linewidth=0.5)
+            sns.swarmplot(y=osub, ax=ax, color=PALETTE["bar_peak"], marker="o",
+                          size=4, alpha=0.75, edgecolor=PALETTE["peak_edge"], linewidth=0.5)
 
+    if target is not None:
+        ax.axhline(target, color=PALETTE["target_line"], linewidth=2.0,
+                   linestyle="--", zorder=6)
+
+    handles = []
     if has_outliers:
-        handles = [
+        handles += [
             Line2D([0], [0], marker="o", linestyle="none", markerfacecolor=pt_col,
                    markeredgecolor="#FFFFFF", markersize=7, label="Samples"),
-            Line2D([0], [0], marker="D", linestyle="none",
+            Line2D([0], [0], marker="o", linestyle="none",
                    markerfacecolor=PALETTE["bar_peak"], markeredgecolor=PALETTE["peak_edge"],
                    markersize=7, label=f"Outliers excl. from box ({outl.size})"),
         ]
+    if target is not None:
+        handles.append(
+            Line2D([0], [0], color=PALETTE["target_line"], linewidth=2.0,
+                   linestyle="--", label=f"Target = {target:.5g}")
+        )
+    if handles:
         ax.legend(handles=handles, fontsize=8, framealpha=0.9,
                   edgecolor="#CCCCCC", loc="best")
 
@@ -493,6 +504,7 @@ header p{{font-size:.82rem;color:var(--mu);margin-top:.25rem}}
              padding:1rem;margin-bottom:1.8rem;text-align:center}}
 .chart-wrap img{{max-width:100%;border-radius:4px}}
 .chart-wrap svg{{max-width:100%;height:auto}}
+.panel-row>.chart-wrap img,.panel-row>.chart-wrap svg{{width:100%}}
 .panel-row{{display:flex;flex-wrap:wrap;gap:1.2rem;align-items:flex-start;margin-bottom:1.8rem}}
 .panel-row>.chart-wrap{{flex:1.4 1 440px;margin-bottom:0;min-width:0}}
 .panel-row>.side-panel{{flex:1 1 320px;min-width:0;overflow-x:auto}}
@@ -768,7 +780,7 @@ def make_histogram(cols, csv_path, time_col_arg, nbins, title, k=0.0,
             if tgt is not None else (None, None)
         )
         box_svg, quartiles = build_boxplot_chart(
-            values, col, chan_stem, color_idx=idx, outliers=outlier_values
+            values, col, chan_stem, color_idx=idx, outliers=outlier_values, target=tgt
         )
 
         channels.append(dict(

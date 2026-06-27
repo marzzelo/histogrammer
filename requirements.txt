@@ -2,6 +2,7 @@ numpy
 pandas
 matplotlib
 scipy
+seaborn
 PyQt5
 xhtml2pdf
 
