@@ -42,7 +42,7 @@ TIME_DEFAULT_NAMES = {"t", "time", "t[s]"}
 AUTO_DETECT_LABEL  = "(auto-detect)"
 NONE_LABEL         = "(none)"
 
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.5.2"
 GITHUB_REPO = "marzzelo/histogrammer"
 
 
@@ -286,6 +286,67 @@ def build_boxplot_chart(values, name, out_stem, color_idx=0, outliers=None, targ
     return box_svg, quartiles
 
 
+# ── time-series line chart ────────────────────────────────────────────────────
+
+
+def build_lineplot_chart(col, x, y, outlier_mask, out_stem, color_idx=0,
+                         x_label="Sample index", target=None, show_outliers=True):
+    """Sequence / time-series line plot of one channel's raw samples.
+
+    When *show_outliers* is true the IQR-detected outliers are highlighted with
+    red markers over the full curve; when false those samples are masked out so
+    the line skips them and the y-axis rescales to the in-range data.  Returns
+    the SVG path, or ``None`` when there is no data."""
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if y.size == 0:
+        return None
+
+    mask  = (np.asarray(outlier_mask, dtype=bool)
+             if outlier_mask is not None else np.zeros(y.shape, dtype=bool))
+    n_out = int(mask.sum())
+
+    line_col = BOX_COLORS[color_idx % len(BOX_COLORS)]
+
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+    fig.patch.set_facecolor(PALETTE["fig_bg"])
+    ax.set_facecolor("#FFFFFF")
+
+    y_line = y.copy()
+    if not show_outliers and n_out:
+        y_line[mask] = np.nan          # break the line at hidden outliers
+    ax.plot(x, y_line, color=line_col, linewidth=1.0, zorder=3, label=col)
+
+    if target is not None:
+        ax.axhline(target, color=PALETTE["target_line"], linewidth=2.0,
+                   linestyle="--", zorder=4, label=f"Target = {target:.5g}")
+
+    if show_outliers and n_out:
+        ax.scatter(x[mask], y[mask], color=PALETTE["bar_peak"],
+                   edgecolor=PALETTE["peak_edge"], s=28, linewidth=0.5,
+                   zorder=5, label=f"Outliers ({n_out})")
+
+    ax.set_xlabel(x_label, fontsize=11, labelpad=8)
+    ax.set_ylabel(col, fontsize=11, labelpad=8)
+    fig.suptitle(f"Time Series — {col}", fontsize=12, fontweight="bold", y=0.995)
+    subtitle = (f"n = {y.size}  |  {n_out} outlier(s) "
+                + ("shown" if show_outliers else "hidden")) if n_out else f"n = {y.size}"
+    ax.set_title(subtitle, fontsize=9, color="#7F8C8D", pad=6)
+    ax.grid(linestyle="--", linewidth=0.55, alpha=0.5, zorder=1)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.spines[["left", "bottom"]].set_linewidth(0.8)
+    ax.tick_params(labelsize=9)
+    ax.legend(fontsize=8, framealpha=0.9, edgecolor="#CCCCCC", loc="best")
+    plt.tight_layout(pad=1.5)
+
+    line_svg = out_stem + "_line.svg"
+    fig.savefig(line_svg, bbox_inches="tight")
+    fig.savefig(out_stem + "_line.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Line chart -> {line_svg}")
+    return line_svg
+
+
 # ── HTML report ───────────────────────────────────────────────────────────────
 
 
@@ -459,12 +520,26 @@ def build_html_report(
             '</div>'
         )
 
+    def chart_only(chart_svg_path):
+        return f'<div class="chart-wrap">{_chart(chart_svg_path)}</div>'
+
+    # ── time-series section (one full-width line chart per channel) ────────────
+    line_blocks = "".join(
+        chan_label(ch) + chart_only(ch["line_svg"])
+        for ch in channels if ch.get("line_svg")
+    )
+    line_section = (
+        '<h2 class="sec-title">Time Series</h2>' + line_blocks
+    ) if line_blocks else ""
+
     # ── histogram section (one stacked chart+table per channel) ───────────────
     hist_blocks = "".join(
-        chan_label(ch) + panel(ch["hist_svg"], bins_table(ch)) for ch in channels
+        chan_label(ch) + panel(ch["hist_svg"], bins_table(ch))
+        for ch in channels if ch.get("hist_svg")
     )
-    hist_section = ('<h2 class="sec-title">Histograms</h2>'
-                    if multi else '') + hist_blocks
+    hist_section = (
+        ('<h2 class="sec-title">Histograms</h2>' if multi else '') + hist_blocks
+    ) if hist_blocks else ""
 
     # ── percentile / decile section ───────────────────────────────────────────
     pct_blocks = "".join(
@@ -546,6 +621,7 @@ td.pct-d{{text-align:right;font-family:Consolas,monospace;color:#8E44AD;font-wei
      &nbsp;|&nbsp; Bins: <strong>{nbins}</strong>
      &nbsp;|&nbsp; Time: <strong>{time_source}</strong>{outlier_note}</p>
 </header>
+{line_section}
 {hist_section}
 {pct_section}
 {box_section}
@@ -673,15 +749,24 @@ def build_histogram_chart(col, values, weights, counts, edges, stats, target,
     return fig, svg_path
 
 
+DEFAULT_CHARTS = {"line": True, "hist": True, "pct": True, "box": True}
+
+
 def make_histogram(cols, csv_path, time_col_arg, nbins, title, k=0.0,
                    show_cols=None, out_name=None, target=None, show_plot=True,
-                   show_outliers=True):
+                   show_outliers=True, charts=None):
     """Core engine — called by both CLI and GUI paths.
 
     *cols* may be a single column name or a list of column names; one combined
-    HTML report is produced with a stacked chart + table block per channel."""
+    HTML report is produced with a stacked chart + table block per channel.
+
+    *charts* selects which chart types to generate for every channel — a dict
+    with the keys ``line``, ``hist``, ``pct`` and ``box`` (missing keys default
+    to enabled)."""
     if not os.path.isfile(csv_path):
         raise FileNotFoundError(f"File not found: {csv_path}")
+
+    charts = {**DEFAULT_CHARTS, **(charts or {})}
 
     df = load_csv(csv_path)
 
@@ -752,14 +837,26 @@ def make_histogram(cols, csv_path, time_col_arg, nbins, title, k=0.0,
                 f"No data remaining for column {col!r} after outlier removal. Lower k."
             )
 
-        # outliers kept aside so the box-plot can still show them as points
+        # outliers kept aside so the line/box charts can still show them as
+        # points — both the values and their position in the original sequence
         if n_removed > 0:
             q1o, q3o = np.percentile(raw_values, [25, 75])
             iqro     = q3o - q1o
             lo_o, hi_o = q1o - k * iqro, q3o + k * iqro
-            outlier_values = raw_values[(raw_values < lo_o) | (raw_values > hi_o)]
+            outlier_mask   = (raw_values < lo_o) | (raw_values > hi_o)
+            outlier_values = raw_values[outlier_mask]
         else:
+            outlier_mask   = np.zeros(len(raw_values), dtype=bool)
             outlier_values = np.empty(0)
+
+        # x-axis for the time-series line plot: the time column when present,
+        # otherwise the sample index
+        if time_col:
+            line_x      = df.loc[valid_mask, time_col].values.astype(float)
+            line_xlabel = time_col
+        else:
+            line_x      = np.arange(len(raw_values))
+            line_xlabel = "Sample index"
 
         # ── statistics ────────────────────────────────────────────────────────
         total_weight = weights.sum()
@@ -782,28 +879,46 @@ def make_histogram(cols, csv_path, time_col_arg, nbins, title, k=0.0,
         )
 
         stats = (w_mean, w_std, p25, p50, p75, v_min, v_max, total_weight)
-        fig, hist_svg = build_histogram_chart(
-            col, values, weights, counts, edges, stats, tgt,
-            y_label, time_col, k, n_removed, nbins,
-            main_title, sub_title, chan_stem,
-            outliers=outlier_values, show_outliers=show_outliers,
-        )
-        figs.append(fig)
 
+        # ── line plot (time series of the raw samples) ────────────────────────
+        line_svg = (
+            build_lineplot_chart(
+                col, line_x, raw_values, outlier_mask, chan_stem, color_idx=idx,
+                x_label=line_xlabel, target=tgt, show_outliers=show_outliers,
+            ) if charts["line"] else None
+        )
+
+        # ── histogram ─────────────────────────────────────────────────────────
+        if charts["hist"]:
+            fig, hist_svg = build_histogram_chart(
+                col, values, weights, counts, edges, stats, tgt,
+                y_label, time_col, k, n_removed, nbins,
+                main_title, sub_title, chan_stem,
+                outliers=outlier_values, show_outliers=show_outliers,
+            )
+            figs.append(fig)
+        else:
+            hist_svg = None
+
+        # ── percentile / relative-error (needs a target) ──────────────────────
         pct_svg, deciles = (
             build_percentile_chart(values, tgt, chan_stem)
-            if tgt is not None else (None, None)
+            if charts["pct"] and tgt is not None else (None, None)
         )
-        box_svg, quartiles = build_boxplot_chart(
-            values, col, chan_stem, color_idx=idx,
-            outliers=(outlier_values if show_outliers else None), target=tgt
+
+        # ── box plot ──────────────────────────────────────────────────────────
+        box_svg, quartiles = (
+            build_boxplot_chart(
+                values, col, chan_stem, color_idx=idx,
+                outliers=(outlier_values if show_outliers else None), target=tgt,
+            ) if charts["box"] else (None, None)
         )
 
         channels.append(dict(
             col=col, has_time=(time_col is not None), y_label=y_label,
             edges=edges, counts=counts, raw_counts=raw_counts,
             total_weight=total_weight, n_samples=len(values), n_removed=n_removed,
-            hist_svg=hist_svg, pct_svg=pct_svg, deciles=deciles,
+            line_svg=line_svg, hist_svg=hist_svg, pct_svg=pct_svg, deciles=deciles,
             box_svg=box_svg, quartiles=quartiles,
         ))
 
@@ -820,7 +935,10 @@ def make_histogram(cols, csv_path, time_col_arg, nbins, title, k=0.0,
     else:
         for fig in figs:
             plt.close(fig)
-    return channels[0]["hist_svg"], html_path
+    ch0 = channels[0]
+    repr_svg = (ch0["line_svg"] or ch0["hist_svg"]
+                or ch0["box_svg"] or ch0["pct_svg"])
+    return repr_svg, html_path
 
 
 # ── PDF export ────────────────────────────────────────────────────────────────
@@ -1217,12 +1335,31 @@ def run_gui():
             ck_row.addStretch()
             form.addRow("Table columns:", ck_row)
 
+            # ── chart-generation checkboxes ────────────────────────────────────
+            chart_row = QHBoxLayout()
+            chart_row.setSpacing(14)
+            self.ck_chart_line = QCheckBox("Line plot")
+            self.ck_chart_hist = QCheckBox("Histogram")
+            self.ck_chart_pct  = QCheckBox("Percentiles")
+            self.ck_chart_box  = QCheckBox("Box plot")
+            self.ck_chart_pct.setToolTip(
+                "Relative-error percentiles — only produced for channels "
+                "that have a target."
+            )
+            for ck in (self.ck_chart_line, self.ck_chart_hist,
+                       self.ck_chart_pct, self.ck_chart_box):
+                ck.setChecked(True)
+                chart_row.addWidget(ck)
+            chart_row.addStretch()
+            form.addRow("Charts:", chart_row)
+
             # ── outlier visibility ─────────────────────────────────────────────
             self.ck_outliers = QCheckBox("Show outliers in charts")
             self.ck_outliers.setChecked(True)
             self.ck_outliers.setToolTip(
-                "When k > 0, draw the IQR-detected outliers on the histogram "
-                "and box-plot charts (they remain excluded from the bins/box)."
+                "When k > 0, draw the IQR-detected outliers on the line, "
+                "histogram and box-plot charts (they remain excluded from the "
+                "bins/box; on the line plot they are hidden when unchecked)."
             )
             out_ck_row = QHBoxLayout()
             out_ck_row.addWidget(self.ck_outliers)
@@ -1438,6 +1575,10 @@ def run_gui():
             self.ck_pct.setChecked(     cfg.get("col_pct",      "1") != "0")
             self.ck_count.setChecked(   cfg.get("col_count",    "1") != "0")
             self.ck_outliers.setChecked(cfg.get("show_outliers", "1") != "0")
+            self.ck_chart_line.setChecked(cfg.get("chart_line", "1") != "0")
+            self.ck_chart_hist.setChecked(cfg.get("chart_hist", "1") != "0")
+            self.ck_chart_pct.setChecked( cfg.get("chart_pct",  "1") != "0")
+            self.ck_chart_box.setChecked( cfg.get("chart_box",  "1") != "0")
 
         def _run(self):
             sel_cols = self._selected_cols()
@@ -1473,6 +1614,10 @@ def run_gui():
                 "col_pct":      int(self.ck_pct.isChecked()),
                 "col_count":    int(self.ck_count.isChecked()),
                 "show_outliers": int(self.ck_outliers.isChecked()),
+                "chart_line":   int(self.ck_chart_line.isChecked()),
+                "chart_hist":   int(self.ck_chart_hist.isChecked()),
+                "chart_pct":    int(self.ck_chart_pct.isChecked()),
+                "chart_box":    int(self.ck_chart_box.isChecked()),
             })
             self.btn_run.setEnabled(False)
             self._set_status("Generating…", "busy")
@@ -1489,6 +1634,12 @@ def run_gui():
                     target       = target,
                     show_plot    = False,
                     show_outliers = self.ck_outliers.isChecked(),
+                    charts       = {
+                        "line": self.ck_chart_line.isChecked(),
+                        "hist": self.ck_chart_hist.isChecked(),
+                        "pct":  self.ck_chart_pct.isChecked(),
+                        "box":  self.ck_chart_box.isChecked(),
+                    },
                     show_cols    = {
                         "time_s":   self.ck_time_s.isChecked(),
                         "time_hms": self.ck_time_hms.isChecked(),
@@ -1499,9 +1650,9 @@ def run_gui():
                 self._last_html = html
                 self.btn_html.setEnabled(True)
                 self.btn_pdf.setEnabled(True)
-                self._set_status(
-                    f"✔  Saved -> {os.path.basename(svg)}  |  {os.path.basename(html)}", "ok"
-                )
+                saved = (f"{os.path.basename(svg)}  |  {os.path.basename(html)}"
+                         if svg else os.path.basename(html))
+                self._set_status(f"✔  Saved -> {saved}", "ok")
                 webbrowser.open(html)
             except (FileNotFoundError, ValueError) as exc:
                 self._set_status(f"✖  {exc}", "err")
