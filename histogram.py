@@ -571,9 +571,14 @@ PALETTE = {
 
 def build_histogram_chart(col, values, weights, counts, edges, stats, target,
                           y_label, time_col, k, n_removed, nbins,
-                          main_title, sub_title, out_stem):
+                          main_title, sub_title, out_stem,
+                          outliers=None, show_outliers=True):
     """Build and save one channel's histogram figure (SVG + companion PNG).
-    Returns ``(fig, svg_path)`` — the caller closes or shows the figure."""
+    Returns ``(fig, svg_path)`` — the caller closes or shows the figure.
+
+    *outliers* are the samples removed by the IQR filter; when *show_outliers*
+    is true they are drawn as a marker rug along the baseline so they stay
+    visible even though they are excluded from the bins."""
     w_mean, w_std, p25, p50, p75, v_min, v_max, total_weight = stats
     centers   = 0.5 * (edges[:-1] + edges[1:])
     bin_width = edges[1] - edges[0]
@@ -600,6 +605,14 @@ def build_histogram_chart(col, values, weights, counts, edges, stats, target,
     if target is not None:
         ax.axvline(target, color=PALETTE["target_line"], linewidth=2.2,
                    linestyle="-.", zorder=4, label=f"Target = {target:.5g}")
+
+    outl = np.asarray(outliers, dtype=float) if outliers is not None else np.empty(0)
+    outl = outl[~np.isnan(outl)]
+    if show_outliers and outl.size:
+        ax.scatter(outl, np.zeros_like(outl), marker="D",
+                   color=PALETTE["bar_peak"], edgecolor=PALETTE["peak_edge"],
+                   s=42, linewidth=0.6, zorder=6, clip_on=False,
+                   label=f"Outliers ({outl.size})")
 
     if len(np.unique(values)) > 1:
         kde   = gaussian_kde(values, weights=weights, bw_method="scott")
@@ -661,7 +674,8 @@ def build_histogram_chart(col, values, weights, counts, edges, stats, target,
 
 
 def make_histogram(cols, csv_path, time_col_arg, nbins, title, k=0.0,
-                   show_cols=None, out_name=None, target=None, show_plot=True):
+                   show_cols=None, out_name=None, target=None, show_plot=True,
+                   show_outliers=True):
     """Core engine — called by both CLI and GUI paths.
 
     *cols* may be a single column name or a list of column names; one combined
@@ -772,6 +786,7 @@ def make_histogram(cols, csv_path, time_col_arg, nbins, title, k=0.0,
             col, values, weights, counts, edges, stats, tgt,
             y_label, time_col, k, n_removed, nbins,
             main_title, sub_title, chan_stem,
+            outliers=outlier_values, show_outliers=show_outliers,
         )
         figs.append(fig)
 
@@ -780,7 +795,8 @@ def make_histogram(cols, csv_path, time_col_arg, nbins, title, k=0.0,
             if tgt is not None else (None, None)
         )
         box_svg, quartiles = build_boxplot_chart(
-            values, col, chan_stem, color_idx=idx, outliers=outlier_values, target=tgt
+            values, col, chan_stem, color_idx=idx,
+            outliers=(outlier_values if show_outliers else None), target=tgt
         )
 
         channels.append(dict(
@@ -1201,6 +1217,18 @@ def run_gui():
             ck_row.addStretch()
             form.addRow("Table columns:", ck_row)
 
+            # ── outlier visibility ─────────────────────────────────────────────
+            self.ck_outliers = QCheckBox("Show outliers in charts")
+            self.ck_outliers.setChecked(True)
+            self.ck_outliers.setToolTip(
+                "When k > 0, draw the IQR-detected outliers on the histogram "
+                "and box-plot charts (they remain excluded from the bins/box)."
+            )
+            out_ck_row = QHBoxLayout()
+            out_ck_row.addWidget(self.ck_outliers)
+            out_ck_row.addStretch()
+            form.addRow("Outliers:", out_ck_row)
+
             # ── separator ─────────────────────────────────────────────────────
             line2 = QFrame()
             line2.setFrameShape(QFrame.HLine)
@@ -1409,6 +1437,7 @@ def run_gui():
             self.ck_time_hms.setChecked(cfg.get("col_time_hms", "1") != "0")
             self.ck_pct.setChecked(     cfg.get("col_pct",      "1") != "0")
             self.ck_count.setChecked(   cfg.get("col_count",    "1") != "0")
+            self.ck_outliers.setChecked(cfg.get("show_outliers", "1") != "0")
 
         def _run(self):
             sel_cols = self._selected_cols()
@@ -1443,6 +1472,7 @@ def run_gui():
                 "col_time_hms": int(self.ck_time_hms.isChecked()),
                 "col_pct":      int(self.ck_pct.isChecked()),
                 "col_count":    int(self.ck_count.isChecked()),
+                "show_outliers": int(self.ck_outliers.isChecked()),
             })
             self.btn_run.setEnabled(False)
             self._set_status("Generating…", "busy")
@@ -1458,6 +1488,7 @@ def run_gui():
                     out_name     = self.w_out.text().strip() or None,
                     target       = target,
                     show_plot    = False,
+                    show_outliers = self.ck_outliers.isChecked(),
                     show_cols    = {
                         "time_s":   self.ck_time_s.isChecked(),
                         "time_hms": self.ck_time_hms.isChecked(),
