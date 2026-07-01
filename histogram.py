@@ -288,6 +288,30 @@ def build_boxplot_chart(values, name, out_stem, color_idx=0, outliers=None, targ
 
 # ── time-series line chart ────────────────────────────────────────────────────
 
+GAP_FACTOR = 5.0   # a Δt this many times the median step is treated as a real gap
+
+
+def _break_at_gaps(x, y, gap_factor=GAP_FACTOR):
+    """Insert a NaN "break" point in the middle of every Δt that exceeds
+    *gap_factor* times the median (positive) step, so the plotted line stops
+    instead of interpolating across missing time spans.  Returns
+    ``(x_line, y_line, n_gaps)`` — the originals when no gap qualifies."""
+    if x.size < 2:
+        return x, y, 0
+    dt = np.diff(x)
+    pos_dt = dt[dt > 0]
+    if pos_dt.size == 0:
+        return x, y, 0
+    median_dt = np.median(pos_dt)
+    if median_dt <= 0:
+        return x, y, 0
+    gap_idx = np.flatnonzero(dt > gap_factor * median_dt)
+    if gap_idx.size == 0:
+        return x, y, 0
+    x_line = np.insert(x, gap_idx + 1, x[gap_idx] + dt[gap_idx] / 2)
+    y_line = np.insert(y, gap_idx + 1, np.nan)
+    return x_line, y_line, gap_idx.size
+
 
 def build_lineplot_chart(col, x, y, outlier_mask, out_stem, color_idx=0,
                          x_label="Sample index", target=None, show_outliers=True):
@@ -295,8 +319,10 @@ def build_lineplot_chart(col, x, y, outlier_mask, out_stem, color_idx=0,
 
     When *show_outliers* is true the IQR-detected outliers are highlighted with
     red markers over the full curve; when false those samples are masked out so
-    the line skips them and the y-axis rescales to the in-range data.  Returns
-    the SVG path, or ``None`` when there is no data."""
+    the line skips them and the y-axis rescales to the in-range data.  Real
+    gaps in time (Δt beyond :data:`GAP_FACTOR` times the median step) break the
+    line instead of being interpolated across.  Returns the SVG path, or
+    ``None`` when there is no data."""
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     if y.size == 0:
@@ -315,7 +341,8 @@ def build_lineplot_chart(col, x, y, outlier_mask, out_stem, color_idx=0,
     y_line = y.copy()
     if not show_outliers and n_out:
         y_line[mask] = np.nan          # break the line at hidden outliers
-    ax.plot(x, y_line, color=line_col, linewidth=1.0, zorder=3, label=col)
+    x_line, y_line, n_gaps = _break_at_gaps(x, y_line)
+    ax.plot(x_line, y_line, color=line_col, linewidth=1.0, zorder=3, label=col)
 
     if target is not None:
         ax.axhline(target, color=PALETTE["target_line"], linewidth=2.0,
@@ -329,8 +356,12 @@ def build_lineplot_chart(col, x, y, outlier_mask, out_stem, color_idx=0,
     ax.set_xlabel(x_label, fontsize=11, labelpad=8)
     ax.set_ylabel(col, fontsize=11, labelpad=8)
     fig.suptitle(f"Time Series — {col}", fontsize=12, fontweight="bold", y=0.995)
-    subtitle = (f"n = {y.size}  |  {n_out} outlier(s) "
-                + ("shown" if show_outliers else "hidden")) if n_out else f"n = {y.size}"
+    subtitle_bits = [f"n = {y.size}"]
+    if n_out:
+        subtitle_bits.append(f"{n_out} outlier(s) " + ("shown" if show_outliers else "hidden"))
+    if n_gaps:
+        subtitle_bits.append(f"{n_gaps} time gap(s)")
+    subtitle = "  |  ".join(subtitle_bits)
     ax.set_title(subtitle, fontsize=9, color="#7F8C8D", pad=6)
     ax.grid(linestyle="--", linewidth=0.55, alpha=0.5, zorder=1)
     ax.spines[["top", "right"]].set_visible(False)
